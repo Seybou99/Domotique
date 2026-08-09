@@ -1,0 +1,391 @@
+// Schéma PostgreSQL — dérivé de @domotique/contract (CDC backend §4).
+//
+// Principe directeur repris du §6.4 : ce fichier ne décrit que le **structurel**.
+// La valeur courante d'une capacité n'est pas ici — elle vit dans le StateStore
+// (Redis en production), et PostgreSQL n'en reçoit qu'un instantané périodique.
+// Écrire chaque changement d'état sur une ligne relationnelle saturerait la base
+// sous charge de capteurs.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Requis derrière un pooler (Neon, pgBouncer) : les migrations ont besoin
+  // d'une connexion directe, l'application d'une connexion poolée.
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────── Comptes et foyers
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+
+  memberships   HomeMember[]
+  refreshTokens RefreshToken[]
+  pushTokens    PushToken[]
+  linkedAccounts ThirdPartyAccount[] @relation("LinkedBy")
+
+  @@map("users")
+}
+
+/// Sessions de rafraîchissement — permet la révocation ciblée (écran 5.6
+/// « sessions actives ») sans invalider tous les appareils de l'utilisateur.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  /// Hash du token, jamais le token lui-même.
+  tokenHash String    @unique
+  userAgent String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Home {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  address   String?
+  /// Fuseau IANA. Sans lui, « chaque soir à 23:30 » n'a aucun sens côté serveur.
+  timezone  String   @default("Europe/Paris")
+  createdAt DateTime @default(now())
+
+  members     HomeMember[]
+  rooms       Room[]
+  units       DeviceUnit[]
+  devices     Device[]
+  automations Automation[]
+  alerts      Alert[]
+  accounts    ThirdPartyAccount[]
+  notificationSettings NotificationSettings?
+
+  @@map("homes")
+}
+
+enum HomeRole {
+  owner
+  admin
+  member
+  guest
+}
+
+model HomeMember {
+  homeId    String    @db.Uuid
+  userId    String    @db.Uuid
+  role      HomeRole
+  invitedAt DateTime  @default(now())
+  joinedAt  DateTime?
+
+  home Home @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([homeId, userId])
+  @@index([userId])
+  @@map("home_members")
+}
+
+model Room {
+  id        String @id @default(uuid()) @db.Uuid
+  homeId    String @db.Uuid
+  name      String
+  icon      String
+  sortOrder Int    @default(0)
+
+  home    Home     @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  /// Supprimer une pièce ne supprime pas les appareils : ils deviennent sans pièce.
+  devices Device[]
+
+  @@index([homeId, sortOrder])
+  @@map("rooms")
+}
+
+// ────────────────────────────────────────────────────── Boîtiers et appareils
+
+model DeviceUnit {
+  id     String  @id @default(uuid()) @db.Uuid
+  /// `null` entre la sortie d'usine et le claim par un client (§8.2) : un
+  /// boîtier existe en base avant d'appartenir à quiconque.
+  homeId String? @db.Uuid
+  /// Identifiant gravé sur le boîtier, repris dans le QR code.
+  serial String @unique
+  name   String
+
+  /// Empreinte du certificat mTLS. Ne franchit jamais le contrat : le §7 impose
+  /// une authentification par certificat, pas par secret partagé.
+  certFingerprint String?   @unique
+  certExpiresAt   DateTime?
+
+  online        Boolean   @default(false)
+  lastHeartbeat DateTime?
+  agentVersion  String?
+  createdAt     DateTime  @default(now())
+
+  home    Home?      @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  devices Device[]
+  claim   UnitClaim?
+
+  @@index([homeId])
+  @@map("device_units")
+}
+
+/// Code d'appairage à usage unique du QR code (§8). Distinct du certificat :
+/// il ne sert qu'au claim initial et expire.
+model UnitClaim {
+  unitId    String    @id @db.Uuid
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  unit DeviceUnit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@map("unit_claims")
+}
+
+enum Protocol {
+  zigbee
+  tuya
+  hue
+  tapo
+}
+
+model Device {
+  id     String @id @default(uuid()) @db.Uuid
+  homeId String @db.Uuid
+  roomId String? @db.Uuid
+  name   String
+  kind   String
+
+  // — provenance réelle, masquée à l'app derrière le modèle unifié
+  protocol   Protocol
+  externalId String
+  unitId     String? @db.Uuid
+  accountId  String? @db.Uuid
+
+  online    Boolean   @default(false)
+  lastSeen  DateTime?
+  createdAt DateTime  @default(now())
+
+  home         Home               @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  room         Room?              @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  unit         DeviceUnit?        @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  account      ThirdPartyAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  capabilities Capability[]
+  commands     Command[]
+  alerts       Alert[]
+
+  /// Un même appareil physique ne peut être importé deux fois dans un foyer.
+  @@unique([homeId, protocol, externalId])
+  @@index([homeId, roomId])
+  @@map("devices")
+}
+
+/// Schéma d'une capacité — statique, écrit au pairing. La **valeur** courante
+/// n'est volontairement pas ici (§6.4) : elle vit dans le StateStore.
+/// `snapshotValue` n'est qu'un instantané de reprise, pas la source de vérité.
+model Capability {
+  deviceId String  @db.Uuid
+  type     String
+  writable Boolean
+  min      Float?
+  max      Float?
+  step     Float?
+  unit     String  @default("none")
+
+  snapshotValue    Json?
+  snapshotUpdatedAt DateTime?
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@id([deviceId, type])
+  @@map("capabilities")
+}
+
+enum CommandStatus {
+  pending
+  queued
+  sent
+  acked
+  timeout
+  failed
+}
+
+/// Commande — l'identifiant vient de l'app, ce qui rend le rejeu idempotent.
+model Command {
+  id       String @id @db.Uuid
+  deviceId String @db.Uuid
+
+  payload      Json
+  status       CommandStatus @default(pending)
+  ackSemantics String
+  timeoutMs    Int
+
+  /// Attribution du geste : indispensable dans un foyer à plusieurs membres,
+  /// et affiché par l'écran 2.2 (« allumé · app »).
+  issuedByUserId       String? @db.Uuid
+  issuedByAutomationId String? @db.Uuid
+
+  errorCode String?
+  issuedAt  DateTime @default(now())
+  ackedAt   DateTime?
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, issuedAt])
+  @@index([status, issuedAt])
+  @@map("commands")
+}
+
+/// Historique d'état — table à forte croissance.
+///
+/// À partitionner par mois avec une rétention de 90 jours (§6.4). Prisma ne sait
+/// pas déclarer le partitionnement : la table est créée normalement par la
+/// migration, puis convertie par la migration SQL `partition_state_changes`.
+/// Ne jamais requêter sans borne de temps.
+model StateChange {
+  id        BigInt   @id @default(autoincrement())
+  deviceId  String   @db.Uuid
+  type      String
+  value     Json
+  /// user | automation | device | external | unknown
+  originKind String
+  originId   String? @db.Uuid
+  at         DateTime @default(now())
+
+  @@index([deviceId, at])
+  @@map("state_changes")
+}
+
+// ─────────────────────────────────────────────────────────────── Comptes tiers
+
+model ThirdPartyAccount {
+  id       String   @id @default(uuid()) @db.Uuid
+  /// Rattaché au foyer, pas à l'utilisateur : le compte survit au départ de
+  /// celui qui l'a lié.
+  homeId   String   @db.Uuid
+  provider Protocol
+  accountLabel String
+
+  /// Chiffrés au repos par l'application (AES-256-GCM, clé au coffre-fort).
+  /// `keyVersion` permet la rotation sans réencrypter tout d'un coup.
+  accessTokenEnc  Bytes
+  refreshTokenEnc Bytes
+  keyVersion      Int      @default(1)
+  expiresAt       DateTime
+  reauthRequired  Boolean  @default(false)
+
+  linkedByUserId String   @db.Uuid
+  linkedAt       DateTime @default(now())
+
+  home         Home     @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  linkedByUser User     @relation("LinkedBy", fields: [linkedByUserId], references: [id])
+  devices      Device[]
+
+  @@unique([homeId, provider, accountLabel])
+  @@index([homeId])
+  @@map("third_party_accounts")
+}
+
+// ──────────────────────────────────────────────────────────────── Scénarios
+
+model Automation {
+  id      String  @id @default(uuid()) @db.Uuid
+  homeId  String  @db.Uuid
+  name    String
+  icon    String
+  /// manual | schedule | sensor | presence
+  triggerKind String
+  trigger    Json
+  conditions Json
+  actions    Json
+  enabled    Boolean @default(true)
+  createdAt  DateTime @default(now())
+
+  home Home            @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  runs AutomationRun[]
+
+  @@index([homeId])
+  @@map("automations")
+}
+
+enum RunStatus {
+  running
+  success
+  partial
+  failed
+}
+
+model AutomationRun {
+  id           String   @id @default(uuid()) @db.Uuid
+  automationId String   @db.Uuid
+  /// Instant théorique du déclenchement. Avec `automationId`, forme la clé
+  /// d'idempotence qui empêche une double exécution quand plusieurs instances
+  /// du backend tournent en parallèle (§9).
+  scheduledFor DateTime
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  status       RunStatus @default(running)
+  failedDeviceIds String[] @db.Uuid
+
+  automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@unique([automationId, scheduledFor])
+  @@index([automationId, startedAt])
+  @@map("automation_runs")
+}
+
+// ───────────────────────────────────────────────────────── Alertes et push
+
+model Alert {
+  id       String   @id @default(uuid()) @db.Uuid
+  homeId   String   @db.Uuid
+  deviceId String?  @db.Uuid
+  category String
+  severity String
+  title    String
+  body     String?
+  read     Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  home   Home    @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  device Device? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([homeId, createdAt])
+  @@index([homeId, read])
+  @@map("alerts")
+}
+
+model NotificationSettings {
+  homeId        String @id @db.Uuid
+  byCategory    Json
+  deviceOverrides Json
+  quietHours    Json?
+
+  home Home @relation(fields: [homeId], references: [id], onDelete: Cascade)
+
+  @@map("notification_settings")
+}
+
+model PushToken {
+  id       String   @id @default(uuid()) @db.Uuid
+  userId   String   @db.Uuid
+  platform String
+  token    String   @unique
+  lastSeen DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_tokens")
+}

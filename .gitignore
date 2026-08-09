@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.expo/
+*.log
+.DS_Store
+
+# Captures d'écran de consoles d'administration : celle de la racine contient
+# l'Access Secret Tuya en clair.
+Capture d*.png
+
+# Secrets — jamais versionnés (CDC §10). .env.example sert de modèle.
+.env
+.env.*
+!.env.example

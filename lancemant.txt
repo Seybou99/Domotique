@@ -1,0 +1,14 @@
+Au quotidien — deux terminaux
+Terminal 1 — le backend :
+
+
+npm run api
+Attends API prête sur http://localhost:3000/v1.
+
+Terminal 2 — l'app :
+
+
+npm run mobile
+Puis tape i pour ouvrir le simulateur iOS (ou a pour Android).
+
+Sur l'écran de connexion, le bouton « Compte de démonstration » te connecte directement. Sinon : demo@domotique.local / demo-mot-de-passe.

@@ -1,0 +1,28 @@
+{
+  "name": "@domotique/contract",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Contrat partagé backend ↔ application (schémas Zod REST + événements WebSocket, v1).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "vitest": "^2.1.9"
+  }
+}

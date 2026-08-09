@@ -1,0 +1,26 @@
+# Dépendances locales du backend. `docker compose up -d` puis `npm run db:migrate`.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: domotique
+      POSTGRES_PASSWORD: domotique
+      POSTGRES_DB: domotique
+    ports: ['5432:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U domotique']
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # AOF activé : sans persistance, un redémarrage vide l'état chaud de toute
+    # la plateforme (§6.4).
+    command: redis-server --appendonly yes
+    ports: ['6379:6379']
+    volumes: ['redisdata:/data']
+
+volumes:
+  pgdata:
+  redisdata:

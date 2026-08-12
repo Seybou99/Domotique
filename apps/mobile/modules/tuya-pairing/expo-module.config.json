@@ -1,0 +1,5 @@
+{
+  "platforms": ["ios", "android"],
+  "ios": { "modules": ["TuyaPairingModule"] },
+  "android": { "modules": ["com.lumo.tuya.TuyaPairingModule"] }
+}

@@ -379,6 +379,12 @@ export function useIntegrations(homeId: string | undefined) {
     },
   });
 
+  /** Compte technique du SDK natif — émis et conservé par le serveur. */
+  const appCredentials = useMutation({
+    mutationFn: (provider: ThirdPartyProviderName) =>
+      api.call(integrationsApi.appCredentials, { params: { provider } }),
+  });
+
   const oauthUrl = useMutation({
     mutationFn: (provider: ThirdPartyProviderName) =>
       api.call(integrationsApi.oauthUrl, { params: { home_id: homeId!, provider } }),
@@ -423,7 +429,7 @@ export function useIntegrations(homeId: string | undefined) {
     },
   });
 
-  return { accounts, linkConsole, oauthUrl, complete, importDevices, unlink };
+  return { accounts, linkConsole, appCredentials, oauthUrl, complete, importDevices, unlink };
 }
 
 export function useDiscoveredDevices(accountId: string | undefined) {

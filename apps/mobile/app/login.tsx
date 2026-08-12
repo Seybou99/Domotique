@@ -28,7 +28,8 @@ export default function Login() {
     try {
       if (mode === 'login') await signIn(email.trim(), password);
       else await signUp(email.trim(), password, displayName.trim());
-      router.replace('/(tabs)');
+      // L'aiguillage décide : parcours d'accueil si le compte n'a pas de foyer.
+      router.replace('/');
     } catch (caught) {
       // Design system §14 : formulation factuelle, action possible, sans excuse.
       setError(messageFor(caught));
@@ -129,7 +130,7 @@ export default function Login() {
                     setBusy(true);
                     setError(null);
                     signIn(DEMO.email, DEMO.password)
-                      .then(() => router.replace('/(tabs)'))
+                      .then(() => router.replace('/'))
                       .catch((caught: unknown) => setError(messageFor(caught)))
                       .finally(() => setBusy(false));
                   }}

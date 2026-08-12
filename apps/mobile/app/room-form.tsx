@@ -174,12 +174,12 @@ export default function RoomForm() {
 
       <Card style={{ gap: space.sm }}>
         <Txt variant="micro" tone="secondary">
-          Appareils à rattacher ({selected.size})
+          Appareils à rattacher ({selected.size}) — facultatif
         </Txt>
         {candidates.length === 0 ? (
           <Txt variant="caption" tone="muted">
-            Tous les appareils sont déjà rattachés à une autre pièce. Vous pourrez les déplacer
-            depuis leur fiche.
+            Aucun appareil disponible : ils sont tous déjà rattachés à une autre pièce. Créez la
+            pièce maintenant, vous pourrez y déplacer des appareils depuis leur fiche.
           </Txt>
         ) : (
           candidates.map((device) => {

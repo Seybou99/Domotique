@@ -15,9 +15,13 @@
     "db:migrate": "npm run db:migrate --workspace api",
     "tuya:check": "npm run tuya:check --workspace api",
     "seed": "npm run seed --workspace api",
-    "smoke": "npm run smoke --workspace api"
+    "smoke": "npm run smoke --workspace api",
+    "postinstall": "patch-package"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
   }
 }

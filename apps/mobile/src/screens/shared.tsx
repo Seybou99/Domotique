@@ -6,7 +6,7 @@ import { CloudOff } from 'lucide-react-native';
 import { Card, ErrorState, SkeletonCard, Txt } from '../components';
 import { useTheme } from '../theme/ThemeProvider';
 import { iconStroke, space } from '../theme/tokens';
-import { ApiException, useSession } from '../api/session';
+import { API_URL, ApiException, useSession } from '../api/session';
 import { useRealtime } from '../api/RealtimeProvider';
 
 /**
@@ -119,7 +119,13 @@ export function ConnectionBanner() {
 }
 
 export function messageFor(error: unknown): string {
-  if (!(error instanceof ApiException)) return 'Le serveur est injoignable.';
+  if (!(error instanceof ApiException)) {
+    // En développement, on affiche l'adresse visée : la cause la plus fréquente
+    // est un `localhost` inatteignable depuis un téléphone physique.
+    return __DEV__
+      ? `Le serveur est injoignable (${API_URL}).`
+      : 'Le serveur est injoignable — vérifiez votre connexion.';
+  }
   switch (error.code) {
     case 'unit_offline':
       return 'L’appareil est hors ligne.';

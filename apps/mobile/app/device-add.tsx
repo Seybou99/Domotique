@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
-import { Radio, Cloud } from 'lucide-react-native';
+import { Radio, Cloud, Wifi } from 'lucide-react-native';
 import type { DeviceKind, RoomIcon } from '@domotique/contract';
 import {
   Button,
@@ -31,14 +31,17 @@ import { useRealtime } from '../src/api/RealtimeProvider';
 /**
  * Écrans 2.4 à 2.8 — Ajout d'un appareil.
  *
- * Deux chemins, présentés comme des cartes égales (écran 2.4) :
+ * Trois chemins, présentés comme des cartes égales (écran 2.4) :
  *  - **Zigbee** : ouvrir la fenêtre d'association du boîtier, attendre que
  *    l'appareil se manifeste, le nommer.
+ *  - **Wi-Fi** : appairer un appareil neuf depuis le téléphone, sans passer par
+ *    l'application du fabricant (`device-pair-wifi`).
  *  - **Compte tiers** : relier un compte par OAuth, puis choisir quels appareils
- *    importer.
+ *    importer — pour les appareils déjà installés.
  *
- * Ce ne sont pas deux façons d'ajouter le même appareil : un appareil Zigbee n'a
- * pas de Wi-Fi, un appareil cloud n'a pas de radio Zigbee. Le matériel décide.
+ * Ce ne sont pas trois façons d'ajouter le même appareil : un appareil Zigbee n'a
+ * pas de Wi-Fi, et un appareil déjà appairé ailleurs n'a plus à l'être. Le
+ * matériel et son état décident.
  */
 type Step = 'source' | 'zigbee' | 'naming' | 'cloud';
 
@@ -166,9 +169,15 @@ export default function DeviceAdd() {
             onPress={startPairing}
           />
           <SourceCard
+            icon={<Wifi size={24} color={t.network} strokeWidth={iconStroke} />}
+            title="Appareil Wi-Fi"
+            description="Prise, ampoule ou capteur neuf — l’appairer directement depuis ici"
+            onPress={() => router.push('/device-pair-wifi')}
+          />
+          <SourceCard
             icon={<Cloud size={24} color={t.network} strokeWidth={iconStroke} />}
             title="Compte connecté"
-            description="Tuya, Philips Hue, Tapo — importer des appareils déjà installés"
+            description="Importer des appareils déjà appairés dans une autre application"
             onPress={() => setStep('cloud')}
           />
 

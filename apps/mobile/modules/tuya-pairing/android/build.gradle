@@ -1,0 +1,39 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+group = 'com.lumo.tuya'
+version = '1.0.0'
+
+android {
+  namespace 'com.lumo.tuya'
+  compileSdk 35
+
+  defaultConfig {
+    minSdk 24
+    targetSdk 35
+  }
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+  kotlinOptions { jvmTarget = '17' }
+}
+
+repositories {
+  mavenCentral()
+  // Dépôts Tuya : ajoutés aussi au projet hôte par le plugin de configuration,
+  // car Gradle résout les dépendances au niveau du projet racine.
+  maven { url 'https://maven-other.tuya.com/repository/maven-releases/' }
+  maven { url 'https://maven-other.tuya.com/repository/maven-commercial-releases/' }
+  // `security-algorithm.aar` est fourni par le plugin, copié depuis secrets/.
+  flatDir { dirs "$projectDir/../../../android/app/libs" }
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+  implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
+
+  // Appairage uniquement — pas les bundles caméra, serrure ou aspirateur.
+  implementation 'com.thingclips.smart:thingsmart:7.8.0'
+  implementation(name: 'security-algorithm-1.0.0-beta', ext: 'aar')
+}

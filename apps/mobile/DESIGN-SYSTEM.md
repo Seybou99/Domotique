@@ -102,3 +102,49 @@ dans le binaire — on n'embarque que les 7 fichiers de la charte (~1,4 Mo au li
 - Graphique de consommation (écran 2.2) — l'endpoint `/devices/:id/energy` existe côté backend.
 - Éditeur de scénario (écrans 3.2 à 3.5) : la liste et le lancement sont branchés, pas la création.
 - Écrans de gestion : membres du foyer, comptes connectés, réglages de notifications.
+
+## Appairage natif Tuya
+
+`modules/tuya-pairing/` — module Expo local, iOS (Swift) et Android (Kotlin).
+
+**Le SDK ne sert qu'à l'appairage.** Il sait aussi piloter les appareils, et on
+ne s'en sert pas : si l'application commandait, un scénario programmé à 23:30 ne
+partirait pas téléphone éteint, et un autre membre du foyer ne pourrait pas
+piloter ce que ce téléphone a appairé. Une fois appairé, l'appareil devient
+visible du projet cloud et c'est le backend qui le commande — avec le connecteur
+Tuya déjà en place. Le pont natif se limite donc à cinq méthodes et trois
+événements.
+
+**Mode AP plutôt que EZ.** L'appareil expose son propre point d'accès et le
+téléphone lui transmet les identifiants Wi-Fi. Le mode EZ diffuse en multicast,
+que de plus en plus de routeurs bloquent : plus d'échecs pour deux manipulations
+de moins.
+
+**Le compte technique vient du serveur.** Le SDK exige un compte utilisateur
+Tuya pour appairer. `POST /v1/integrations/tuya/app-credentials` l'émet et le
+conserve : généré sur l'appareil, une réinstallation en créerait un nouveau et
+les appareils déjà appairés deviendraient invisibles.
+
+**Tout passe par le plugin de configuration.** `expo prebuild` régénère `ios/` et
+`android/` et écrase les modifications manuelles ; `plugins/withTuya.js` est la
+seule façon de garder une configuration native reproductible.
+
+Le module est absent d'Expo Go : `isAvailable` permet à l'interface de le dire
+proprement au lieu de planter.
+
+**L'écran est `app/device-pair-wifi.tsx`**, atteint depuis la troisième carte de
+`device-add`. Cinq états : préparer l'appareil, saisir le réseau, chercher,
+trouvé, échoué. Deux écrans avant le lancement plutôt qu'un seul — la fenêtre
+d'association est courte, et on ne veut pas la voir se refermer pendant la saisie
+du mot de passe. L'étape de recherche nomme ses deux phases (rejoindre le Wi-Fi,
+s'associer au foyer) : quand ça échoue, savoir laquelle a bloqué oriente la
+correction. L'écran d'échec liste les causes par fréquence réelle, le 2,4 GHz en
+tête.
+
+**Le réseau ne se saisit qu'une fois.** iOS ne communique jamais le mot de passe
+Wi-Fi à une application : le seul moyen d'éviter de le ressaisir à chaque
+appareil est de le retenir. `src/api/wifiCredentials.ts` le conserve dans le
+trousseau, aux côtés des jetons de session, et l'efface à la déconnexion.
+L'enregistrement n'a lieu qu'à l'appairage **réussi** — le graver au lancement
+figerait une faute de frappe, que la tentative suivante rejouerait. Le réseau
+retenu prime sur celui que détecte le système : lui seul porte le mot de passe.

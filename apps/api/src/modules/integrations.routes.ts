@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { Prisma } from '@prisma/client';
 import {
@@ -135,6 +135,42 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: Ctx) {
       include: { _count: { select: { devices: true } } },
     });
     return { account: toAccount(account) };
+  });
+
+  /**
+   * Identifiants du compte technique du SDK natif.
+   *
+   * Émis une fois puis relus : c'est ce qui fait qu'une réinstallation de
+   * l'application retrouve les appareils déjà appairés. Le mot de passe est
+   * chiffré au repos — il donne accès à ces appareils.
+   */
+  registerRoute(app, ctx, integrationsApi.appCredentials, async ({ userId, params }) => {
+    const existing = await prisma.nativeSdkAccount.findUnique({
+      where: { userId_provider: { userId: userId!, provider: params.provider as Protocol } },
+    });
+    if (existing) {
+      return {
+        uid: existing.uid,
+        password: cipher.decrypt(existing.passwordEnc),
+        country_code: existing.countryCode,
+      };
+    }
+
+    // L'identifiant dérive de celui de l'utilisateur : stable, non devinable
+    // depuis l'extérieur, et sans lien lisible avec son adresse e-mail.
+    const uid = `lumo-${createHash('sha256').update(`${userId}:${params.provider}`).digest('hex').slice(0, 24)}`;
+    const password = randomBytes(24).toString('base64url');
+
+    const created = await prisma.nativeSdkAccount.create({
+      data: {
+        userId: userId!,
+        provider: params.provider as Protocol,
+        uid,
+        passwordEnc: cipher.encrypt(password),
+        keyVersion: cipher.currentVersion,
+      },
+    });
+    return { uid: created.uid, password, country_code: created.countryCode };
   });
 
   registerRoute(app, ctx, integrationsApi.oauthCallback, async ({ userId, params, body }) => {

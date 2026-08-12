@@ -390,6 +390,28 @@ export const integrations = {
     response: z.object({ account: thirdPartyAccount }),
   }),
 
+  /**
+   * Identifiants du compte technique utilisé par le SDK natif d'appairage.
+   *
+   * Le SDK Tuya exige un compte utilisateur pour appairer un appareil. Ce compte
+   * est **technique** : il n'a rien à voir avec le compte de la plateforme, et
+   * l'utilisateur ne le voit jamais. Il est émis et conservé par le serveur, et
+   * non généré sur l'appareil — sinon une réinstallation en créerait un nouveau,
+   * et les appareils déjà appairés deviendraient invisibles.
+   */
+  appCredentials: defineEndpoint({
+    method: 'POST',
+    path: '/integrations/:provider/app-credentials',
+    summary: 'Identifiants du compte technique du SDK d’appairage',
+    params: z.object({ provider: protocol.exclude(['zigbee']) }),
+    response: z.object({
+      uid: z.string(),
+      password: z.string(),
+      /** Indicatif téléphonique attendu par le SDK (« 33 » pour la France). */
+      country_code: z.string(),
+    }),
+  }),
+
   oauthCallback: defineEndpoint({
     method: 'POST',
     path: '/homes/:home_id/integrations/:provider/callback',

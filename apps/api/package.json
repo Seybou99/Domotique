@@ -19,7 +19,8 @@
     "smoke:automations": "tsx scripts/smoke-automations.ts",
     "smoke:integrations": "tsx scripts/smoke-integrations.ts",
     "seed": "tsx scripts/seed.ts",
-    "gen:key": "tsx scripts/gen-key.ts"
+    "gen:key": "tsx scripts/gen-key.ts",
+    "smoke:onboarding": "tsx scripts/smoke-onboarding.ts"
   },
   "dependencies": {
     "@domotique/contract": "*",

@@ -28,10 +28,12 @@ export default function TabsLayout() {
   const router = useRouter();
   const pathname = usePathname();
   const { status } = useSession();
-  const { home } = useHome();
+  const { home, homes, isLoading: homesLoading } = useHome();
   const { data: alerts } = useAlerts(home?.id);
 
   if (status === 'signed-out') return <Redirect href="/login" />;
+  // Foyer supprimé ou compte tout neuf : l'application n'a rien à montrer.
+  if (!homesLoading && homes.length === 0) return <Redirect href="/onboarding" />;
 
   const active: TabKey = pathname.includes('/devices')
     ? 'appareils'

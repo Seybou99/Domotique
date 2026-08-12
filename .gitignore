@@ -12,3 +12,19 @@ Capture d*.png
 .env
 .env.*
 !.env.example
+
+# Clés du SDK natif Tuya et images de sécurité : hors du dépôt.
+apps/mobile/secrets/tuya.json
+apps/mobile/secrets/ios_core_sdk/
+apps/mobile/secrets/*.aar
+
+# Projets natifs générés par `expo prebuild` — jamais édités à la main.
+apps/mobile/ios/
+apps/mobile/android/
+
+# SDK Tuya Android : binaires fournis par le fabricant, hors du dépôt
+# (symétrique de apps/mobile/secrets/ios_core_sdk/).
+Android_SDK.zip
+Android_SDK/
+iOS_SDK.zip
+iOS_SDK/

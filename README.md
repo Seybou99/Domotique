@@ -46,7 +46,8 @@ relancer `npm run build` avant de recharger l'app.
 | Backend — connecteur Zigbee/MQTT, push | Pas commencés |
 | Écrans produit branchés sur l'API | Connexion, tableau de bord, pièce, appareils, détail, scénarios, alertes, profil |
 | CRUD dans l'app | Pièces (créer / modifier / supprimer), ajout d'appareil (Zigbee et compte tiers), scénarios (créer / modifier / supprimer) |
-| Écrans produit restants | Onboarding (9 écrans), gestion des membres, réglages de notifications, graphique de consommation |
+| Parcours d'accueil | Bienvenue, création du foyer, déballage, scan QR, confirmation, première pièce, tour guidé |
+| Écrans produit restants | Gestion des membres, réglages de notifications, graphique de consommation |
 
 ## Comment l'app parle au backend
 
@@ -70,6 +71,28 @@ capteur ne doit pas provoquer une requête ni faire clignoter l'écran.
 **Les commandes sont optimistes** (design system §5) : la valeur est écrite dans le cache avant
 l'appel, restaurée si le serveur refuse, et confirmée par le canal temps réel — c'est lui qui fait
 autorité.
+
+## Parcours d'accueil (design system §7)
+
+`app/onboarding/` — un nouveau compte y est envoyé automatiquement. Le critère est **l'absence de
+foyer**, pas un drapeau « déjà vu » : un compte sans foyer n'a rien à afficher, et quelqu'un qui
+supprime son dernier foyer doit repasser par la création plutôt que d'atterrir sur un tableau de
+bord vide.
+
+**Écart assumé avec le §7 : le boîtier n'est pas un passage obligé.** Le document déroule neuf
+écrans comme un chemin unique, mais un client qui n'a que des prises Wi-Fi n'a pas de boîtier.
+L'obliger à traverser trois écrans de déballage pour rien est le meilleur moyen de le perdre dès la
+première minute — d'où le « Je n'ai pas encore de boîtier » qui saute directement à la pièce.
+
+**Le scan de QR code a un repli manuel.** Un code abîmé, une caméra refusée, un boîtier dans un
+placard sombre : sans cette porte de sortie, l'utilisateur n'a plus qu'à appeler le support. Le
+scanner accepte le JSON du provisionnement usine et une forme courte `SERIE:CODE` lisible à voix
+haute.
+
+**Le fuseau est déduit de l'appareil**, pas demandé. L'adresse reste facultative : elle ne sert
+qu'à la météo, et la réclamer pour piloter une lampe est intrusif.
+
+`npm run smoke:onboarding --workspace api` rejoue la séquence exacte des écrans contre l'API.
 
 ## Les trois parcours de gestion
 
@@ -103,3 +126,8 @@ validation.
 
 L'app ne contient donc **aucun secret**. Seule `EXPO_PUBLIC_API_URL` a sa place dans
 `apps/mobile/.env` : toute variable préfixée `EXPO_PUBLIC_` est inlinée en clair dans le bundle.
+
+**Sur un téléphone physique, `localhost` ne marche pas** — il désigne le téléphone. Il faut
+l'adresse du Mac sur le réseau local (`ipconfig getifaddr en0`), qui fonctionne aussi depuis le
+simulateur. Les variables `EXPO_PUBLIC_` étant inlinées au bundle, relancer Expo avec `--clear`
+après modification.

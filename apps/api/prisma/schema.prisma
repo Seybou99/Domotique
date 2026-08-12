@@ -31,6 +31,7 @@ model User {
   memberships   HomeMember[]
   refreshTokens RefreshToken[]
   pushTokens    PushToken[]
+  sdkAccounts   NativeSdkAccount[]
   linkedAccounts ThirdPartyAccount[] @relation("LinkedBy")
 
   @@map("users")
@@ -375,6 +376,26 @@ model NotificationSettings {
   home Home @relation(fields: [homeId], references: [id], onDelete: Cascade)
 
   @@map("notification_settings")
+}
+
+/// Compte technique du SDK natif d'appairage (Tuya).
+///
+/// Émis par le serveur pour que l'appareil retrouve le même compte après une
+/// réinstallation. Le mot de passe est chiffré au repos comme les jetons OAuth :
+/// il donne accès aux appareils appairés par cet utilisateur.
+model NativeSdkAccount {
+  userId      String   @db.Uuid
+  provider    Protocol
+  uid         String   @unique
+  passwordEnc Bytes
+  keyVersion  Int      @default(1)
+  countryCode String   @default("33")
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, provider])
+  @@map("native_sdk_accounts")
 }
 
 model PushToken {

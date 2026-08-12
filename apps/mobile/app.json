@@ -8,7 +8,8 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "supportsTablet": true,
-      "backgroundColor": "#141A22"
+      "backgroundColor": "#141A22",
+      "bundleIdentifier": "com.lumo.dev.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -17,7 +18,8 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.lumo.dev.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -26,7 +28,8 @@
       "expo-router",
       "expo-font",
       "expo-secure-store",
-      "expo-web-browser"
+      "expo-web-browser",
+      "./plugins/withTuya"
     ],
     "scheme": "domotique",
     "backgroundColor": "#141A22"

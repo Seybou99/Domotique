@@ -16,3 +16,5 @@ export { SectionHeader, ScreenHeader } from './Headers';
 export { TabBar } from './TabBar';
 export type { TabKey } from './TabBar';
 export { Skeleton, SkeletonCard, EmptyState, ErrorState, OfflineBanner } from './Feedback';
+export { EnergyChart, EnergyChartEmpty } from './EnergyChart';
+export type { EnergyPoint } from './EnergyChart';

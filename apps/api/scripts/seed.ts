@@ -262,6 +262,50 @@ await prisma.alert.createMany({
   ],
 });
 
+/**
+ * Relevés de consommation des huit derniers jours.
+ *
+ * L'écran de détail agrège `state_changes` pour tracer sa courbe : sans
+ * historique, il n'a rien à montrer, et une démonstration qui n'affiche jamais de
+ * graphique laisse croire à une panne.
+ *
+ * Le compteur d'un appareil est **cumulatif** — c'est ce que remontent les prises
+ * du marché, et ce que suppose la requête d'agrégation, qui soustrait le minimum
+ * du maximum de chaque intervalle. Des valeurs qui redescendraient donneraient
+ * des totaux négatifs, ramenés à zéro : une courbe plate, sans erreur visible.
+ */
+const measured = created.filter((device, index) =>
+  specs[index]!.caps.some((c) => c.type === 'energy'),
+);
+
+if (measured.length > 0) {
+  const readings: { deviceId: string; type: string; value: object; originKind: string; at: Date }[] = [];
+  const start = new Date(Date.now() - 8 * 24 * 3600_000);
+
+  for (const device of measured) {
+    let counter = 0;
+    for (let hour = 0; hour < 8 * 24; hour += 1) {
+      const at = new Date(start.getTime() + hour * 3600_000);
+      // Profil journalier grossier : creux la nuit, pointes matin et soir. Une
+      // consommation uniforme donnerait un graphique parfaitement plat, qui ne
+      // permettrait pas de juger la lisibilité du tracé.
+      const h = at.getHours();
+      const base = h >= 0 && h < 6 ? 0.002 : h < 9 ? 0.018 : h < 18 ? 0.008 : h < 23 ? 0.022 : 0.006;
+      counter += base * (0.7 + Math.random() * 0.6);
+      readings.push({
+        deviceId: device.id,
+        type: 'energy',
+        value: { type: 'energy', value: Number(counter.toFixed(4)) },
+        originKind: 'device',
+        at,
+      });
+    }
+  }
+
+  await prisma.stateChange.createMany({ data: readings });
+  console.log(`  Relevés   : ${readings.length} points de consommation sur 8 jours`);
+}
+
 console.log('Jeu de démonstration créé.');
 console.log('');
 console.log('  Foyer     :', home.name, `(${rooms.length} pièces, ${created.length} appareils)`);

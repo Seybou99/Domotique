@@ -1,19 +1,28 @@
-import React from 'react';
-import { View } from 'react-native';
+import React, { useState } from 'react';
+import { Pressable, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import type { CapabilityState, ChangeOrigin } from '@domotique/contract';
 import {
   Card,
   Divider,
+  EnergyChart,
+  EnergyChartEmpty,
   ScreenHeader,
   StatusChip,
   Txt,
   VerticalLevelSlider,
 } from '../../src/components';
 import { Screen } from '../../src/screens/shared';
-import { space } from '../../src/theme/tokens';
+import { useTheme } from '../../src/theme/ThemeProvider';
+import { radius, space } from '../../src/theme/tokens';
 import { useHome } from '../../src/api/HomeProvider';
-import { useDeviceHistory, useHomeState, useSendCommand } from '../../src/api/hooks';
+import {
+  useDeviceEnergy,
+  useDeviceHistory,
+  useHomeState,
+  useSendCommand,
+  type EnergyRange,
+} from '../../src/api/hooks';
 import { formatAgo } from '../../src/lib/dates';
 
 /** Écran 2.2 — Détail d'un appareil. */
@@ -97,6 +106,10 @@ export default function DeviceDetail() {
               )}
             </View>
           </View>
+
+          {/* L'historique n'a de sens que si l'appareil mesure sa consommation :
+              l'afficher ailleurs promettrait une courbe qui ne viendra jamais. */}
+          {energy && <EnergySection deviceId={id} />}
 
           {/* Capteurs et mesures : tout ce qui n'est pas pilotable. */}
           {device.capabilities.filter(isMeasure).length > 0 && (
@@ -269,4 +282,100 @@ function describeOrigin(origin: ChangeOrigin): string {
     default:
       return '';
   }
+}
+
+/**
+ * Historique de consommation (écran 2.2).
+ *
+ * Deux fenêtres seulement, celles que le serveur sait agréger : les vingt-quatre
+ * dernières heures et les sept derniers jours. Une plage libre demanderait un
+ * sélecteur de dates pour une lecture qu'on fait d'un coup d'œil.
+ *
+ * Un axe unique, jamais deux : la consommation est la seule grandeur tracée ici.
+ */
+function EnergySection({ deviceId }: { deviceId: string }) {
+  const t = useTheme();
+  const [range, setRange] = useState<EnergyRange>('24h');
+  const energy = useDeviceEnergy(deviceId, range);
+
+  const points = energy.data?.points ?? [];
+  const total = points.reduce((sum, p) => sum + p.value, 0);
+
+  return (
+    <Card style={{ gap: space.md }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        <View style={{ flex: 1 }}>
+          <Txt variant="micro" tone="secondary">
+            Consommation
+          </Txt>
+          <Txt variant="bodyStrong">
+            {range === '24h' ? 'Dernières 24 heures' : '7 derniers jours'}
+          </Txt>
+        </View>
+        {/* Les filtres sur une seule rangée, au-dessus du tracé. */}
+        <View style={{ flexDirection: 'row', gap: space.xs }}>
+          {(['24h', '7d'] as const).map((value) => {
+            const active = range === value;
+            return (
+              <Pressable
+                key={value}
+                onPress={() => setRange(value)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={value === '24h' ? '24 heures' : '7 jours'}
+                hitSlop={8}
+                style={{
+                  height: 32,
+                  paddingHorizontal: space.sm + 2,
+                  borderRadius: radius.pill,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderWidth: 1,
+                  borderColor: active ? t.energyRing : t.lineStrong,
+                  backgroundColor: active ? t.energySoft : 'transparent',
+                }}
+              >
+                <Txt variant="micro" tone={active ? 'energy' : 'secondary'}>
+                  {value === '24h' ? '24 h' : '7 j'}
+                </Txt>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      {energy.isLoading ? (
+        <EnergyChartEmpty message="Lecture des relevés…" />
+      ) : points.length === 0 ? (
+        <EnergyChartEmpty message="Aucun relevé sur cette période. Les mesures apparaîtront à mesure que l’appareil les remonte." />
+      ) : (
+        <>
+          <EnergyChart points={points} unit={energy.data?.unit ?? 'kWh'} formatLabel={labelFor(range)} />
+          <Divider />
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.sm }}>
+            <Txt variant="caption" tone="secondary" style={{ flex: 1 }}>
+              Total sur la période
+            </Txt>
+            <Txt variant="bodyStrong">{decimal(total, 3)} kWh</Txt>
+          </View>
+        </>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Étiquettes d'axe, allégées : au-delà de six repères, elles se chevauchent sur
+ * la largeur d'un téléphone. Une heure sur six, et le jour en toutes lettres.
+ */
+function labelFor(range: EnergyRange) {
+  return (at: string, index: number, total: number): string | null => {
+    const date = new Date(at);
+    if (range === '7d') {
+      return date.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', '');
+    }
+    const step = Math.max(1, Math.ceil(total / 5));
+    if (index % step !== 0 && index !== total - 1) return null;
+    return `${String(date.getHours()).padStart(2, '0')} h`;
+  };
 }

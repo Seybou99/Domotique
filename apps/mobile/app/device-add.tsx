@@ -141,11 +141,22 @@ export default function DeviceAdd() {
       <ScreenHeader
         title="Ajouter un appareil"
         onBack={() => {
-          if (step === 'source') router.back();
-          else {
-            if (unit && step !== 'cloud') void pairing.stop.mutateAsync(unit.id).catch(() => {});
-            setStep('source');
+          // Le retour défait une étape à la fois. Depuis les appareils d'un
+          // compte, il ramène à la liste des comptes : sauter jusqu'au choix du
+          // mode obligerait à refaire deux écrans pour changer d'avis sur un
+          // seul. La sélection est vidée au passage — elle appartenait au compte
+          // qu'on vient de quitter.
+          if (step === 'cloud' && accountId) {
+            setAccountId(null);
+            setSelectedExternal(new Set());
+            return;
           }
+          if (step === 'source') {
+            router.back();
+            return;
+          }
+          if (unit && step !== 'cloud') void pairing.stop.mutateAsync(unit.id).catch(() => {});
+          setStep('source');
         }}
       />
 

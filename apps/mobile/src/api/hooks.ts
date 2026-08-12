@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   useMutation,
   useQuery,
@@ -42,6 +42,7 @@ export const keys = {
   alerts: (homeId: string) => ['alerts', homeId] as const,
   units: (homeId: string) => ['units', homeId] as const,
   history: (deviceId: string) => ['history', deviceId] as const,
+  energy: (deviceId: string, bucket: string) => ['energy', deviceId, bucket] as const,
   integrations: (homeId: string) => ['integrations', homeId] as const,
 };
 
@@ -110,6 +111,42 @@ export function useDeviceHistory(deviceId: string | undefined) {
     enabled: Boolean(deviceId),
     queryFn: () => api.call(devicesApi.history, { params: { device_id: deviceId! }, query: { limit: 20 } }),
     select: (data) => data.items,
+  });
+}
+
+/** Fenêtres proposées sur l'écran de détail — l'API n'agrège que par heure ou par jour. */
+export type EnergyRange = '24h' | '7d';
+
+/**
+ * Consommation agrégée d'un appareil.
+ *
+ * Les bornes sont calculées à l'ouverture et **mémorisées pour la durée du
+ * montage** : les recalculer à chaque rendu produirait un `queryKey` toujours
+ * différent, donc une requête en boucle.
+ *
+ * `staleTime` d'une minute : la consommation d'une heure écoulée ne change plus,
+ * et celle en cours ne bouge pas assez vite pour justifier de resonder.
+ */
+export function useDeviceEnergy(deviceId: string | undefined, range: EnergyRange) {
+  const { api } = useSession();
+  const window = useMemo(() => {
+    const to = new Date();
+    const from = new Date(to);
+    if (range === '24h') from.setHours(from.getHours() - 24);
+    else from.setDate(from.getDate() - 7);
+    return { from: from.toISOString(), to: to.toISOString() };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range, deviceId]);
+
+  return useQuery({
+    queryKey: keys.energy(deviceId ?? '', range),
+    enabled: Boolean(deviceId),
+    queryFn: () =>
+      api.call(devicesApi.energy, {
+        params: { device_id: deviceId! },
+        query: { bucket: range === '24h' ? 'hour' : 'day', from: window.from, to: window.to },
+      }),
+    staleTime: 60_000,
   });
 }
 

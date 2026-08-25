@@ -342,6 +342,22 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: Ctx) {
         include: { capabilities: true },
       });
 
+      /**
+       * État initial, tel que le fournisseur le donnait à la découverte.
+       *
+       * Sans lui, l'appareil entre dans le foyer sans aucune valeur : l'interface
+       * le montre éteint, un allumage paraît retomber aussitôt — c'est en réalité
+       * l'état optimiste qui cède la place à un état vide — et rien ne se corrige
+       * tant qu'aucun relevé n'arrive. Or il n'en arrive aucun quand la
+       * scrutation est désactivée, ce qui est le réglage par défaut.
+       */
+      for (const capability of source.capabilities) {
+        if (!capability.value) continue;
+        await ctx.devices.recordState(device.id, account.homeId, capability.value, new Date(), {
+          kind: 'external',
+        });
+      }
+
       created.push(await ctx.devices.toContractDevice(device));
       await events.publish(account.homeId, {
         type: 'device_added',

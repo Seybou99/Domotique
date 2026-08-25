@@ -1,4 +1,4 @@
-import type { Protocol } from '@domotique/contract';
+import type { CapabilityValue, Protocol } from '@domotique/contract';
 
 /**
  * Fournisseur d'écosystème tiers (CDC §6.2, §6.3).
@@ -23,7 +23,22 @@ export type ProviderDevice = {
   kind: string;
   /** Faux si aucune capacité n'est prise en charge par la plateforme. */
   supported: boolean;
-  capabilities: { type: string; writable: boolean; min?: number; max?: number; unit?: string }[];
+  capabilities: {
+    type: string;
+    writable: boolean;
+    min?: number;
+    max?: number;
+    unit?: string;
+    /**
+     * État au moment de la découverte, quand le fournisseur le donne.
+     *
+     * L'import s'en sert pour amorcer l'état chaud. Sans lui, un appareil entre
+     * dans le foyer sans aucune valeur : l'interface le montre éteint, un
+     * allumage semble retomber aussitôt, et rien ne se corrige tant qu'aucun
+     * relevé n'arrive — ce qui n'arrive jamais si la scrutation est désactivée.
+     */
+    value?: CapabilityValue;
+  }[];
 };
 
 /**

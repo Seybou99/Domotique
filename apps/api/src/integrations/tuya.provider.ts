@@ -169,7 +169,9 @@ export class TuyaProvider implements ThirdPartyProvider {
       const capabilities = (device.status ?? [])
         .map((dp) => dpToCapability(dp.code, dp.value, specs[index]))
         .filter((value): value is NonNullable<typeof value> => value !== null)
-        .map((value) => ({ type: value.type, writable: isWritable(value.type) }));
+        // La valeur est conservée, pas seulement le type : elle amorce l'état
+        // chaud à l'import, sans quoi l'appareil arrive sans état connu.
+        .map((value) => ({ type: value.type, writable: isWritable(value.type), value }));
 
       return {
         externalId: device.id,

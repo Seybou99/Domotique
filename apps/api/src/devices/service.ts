@@ -276,6 +276,27 @@ export class DeviceService {
       throw error instanceof AppError ? error : new AppError('device_rejected', 'Commande refusée');
     }
 
+    /**
+     * État appliqué d'office quand seule la passerelle accuse réception.
+     *
+     * `device` signifie que l'appareil confirmera lui-même : le vrai état
+     * arrivera par le flux du boîtier, et l'écrire ici le devancerait à tort.
+     * `gateway` signifie que le cloud du fournisseur a pris la commande, sans
+     * que rien ne revienne ensuite — sans cette écriture, l'interface retombe
+     * sur la valeur d'avant, et l'utilisateur voit son allumage s'annuler seul.
+     */
+    if (connector.ackSemantics === 'gateway') {
+      await this.recordState(
+        device.id,
+        device.homeId,
+        request.target as CapabilityValue,
+        new Date(),
+        issuedBy.userId
+          ? { kind: 'user', id: issuedBy.userId }
+          : { kind: 'automation', id: issuedBy.automationId ?? undefined },
+      );
+    }
+
     const sent = await this.prisma.command.update({
       where: { id: created.id },
       data: { status: 'sent' },

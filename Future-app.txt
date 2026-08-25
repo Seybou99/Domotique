@@ -1,0 +1,195 @@
+CE QUI RESTE À FAIRE — VUE D'ENSEMBLE
+======================================
+Établi le 25 août 2026, à partir du code et non de mémoire :
+comparaison du contrat (52 endpoints) avec le backend et l'application.
+
+Rappel de l'état actuel : le backend implémente LES 52 ROUTES du contrat.
+Le manque n'est donc plus côté serveur, mais dans l'interface qui les
+utilise, dans les connecteurs matériels, et dans la mise en service.
+
+Voir Document-technique.txt § 4 avant de toucher à Tuya : neuf pièges y sont
+consignés, dont plusieurs échouent sans le moindre message d'erreur.
+
+
+A. CE QUI BLOQUE UN USAGE RÉEL
+===============================
+
+A1. Le Message Service de Tuya                          [le plus utile]
+-----------------------------------------------------------------------
+Aujourd'hui, l'état affiché est celui qu'on a COMMANDÉ, pas celui mesuré :
+`TUYA_POLL_INTERVAL_S=0`, rien n'interroge les appareils.
+
+Conséquences visibles :
+  - un appareil éteint par son bouton physique reste « allumé » dans l'app
+  - le graphique de consommation d'un appareil réel reste vide, faute de
+    relevés dans `state_changes`
+  - un appareil débranché apparaît toujours en ligne
+
+Le Message Service pousse les changements au lieu qu'on les demande : état
+réel, consommation vivante, et aucun quota consommé en continu. C'est prévu
+au CDC §6.2 et référencé dans le code.
+
+À défaut, `TUYA_POLL_INTERVAL_S=300` fait illusion — au prix du quota.
+
+A2. Le connecteur Zigbee / MQTT
+--------------------------------
+`MQTT_BROKER_URL` est vide : l'appairage Zigbee répond « Aucun connecteur
+Zigbee actif ». Le parcours existe dans l'interface, le boîtier de
+démonstration existe en base, mais rien ne tourne derrière.
+
+À faire : un broker MQTT, l'agent côté boîtier, et le connecteur côté
+serveur (`src/devices/` — le squelette `DeviceConnector` attend).
+
+A3. Le module Android
+----------------------
+`modules/tuya-pairing/android/` expose encore l'ANCIEN mode AP. Il n'a pas
+été mis à niveau vers l'appairage Bluetooth, et ne compile nulle part : il
+n'y a pas de dossier `android/` dans le projet.
+
+À faire : transposer `TuyaPairingModule.swift` (scan BLE, liste des réseaux,
+appairage, lecture du foyer), puis `npx expo prebuild -p android`.
+
+
+B. FONCTIONS DU SERVEUR SANS INTERFACE
+=======================================
+
+Ces routes existent, sont testées, et ne sont appelées par aucun écran.
+C'est le gisement le plus rentable : le travail serveur est déjà fait.
+
+B1. Gestion des membres du foyer
+---------------------------------
+    homes.members        lister les membres
+    homes.invite         inviter par e-mail
+    homes.removeMember   retirer un membre
+    homes.update         renommer le foyer, changer l'adresse
+
+Écran à créer. C'est ce qui rend le produit multi-utilisateur — aujourd'hui
+un foyer partagé est invisible depuis l'application.
+
+B2. Réglages de notifications
+------------------------------
+    alerts.getSettings / updateSettings   préférences par catégorie
+    alerts.markRead                       marquer une alerte comme lue
+    alerts.registerPushToken /
+    alerts.unregisterPushToken            jetons d'appareil
+
+L'écran Alertes affiche la liste mais ne permet ni de marquer comme lu, ni de
+régler quoi que ce soit.
+
+B3. Comptes connectés
+----------------------
+    integrations.unlink   délier un compte tiers et ses appareils
+
+Il n'existe aucun écran de gestion des comptes : on peut en relier un depuis
+l'ajout d'appareil, jamais le retirer.
+
+B4. Détails secondaires
+------------------------
+    rooms.reorder        réorganiser le tableau de bord (écran 1.6 du CDC)
+    automations.history   historique d'exécution d'un scénario
+    units.remove          retirer un boîtier
+
+
+C. ÉCRANS ET INTERFACE
+=======================
+
+C1. Feuille modale de contrôle rapide (écran 1.3)
+   Le contenu existe, le conteneur non. Permet d'agir sur un appareil sans
+   quitter le tableau de bord.
+
+C2. Éditeur de scénario complet (écrans 3.2 à 3.5)
+   `scenario-form.tsx` existe ; les conditions et actions avancées du CDC
+   ne sont pas toutes couvertes.
+
+C3. Vue tableau du graphique de consommation
+   Écart assumé à la règle d'accessibilité : les valeurs ne sont lisibles
+   qu'au toucher d'une colonne, sans équivalent textuel complet.
+
+C4. Mode clair
+   Les tokens existent et sont validés, mais l'application démarre en sombre
+   sans possibilité de bascule.
+
+
+D. ÉPROUVER CE QUI EST ÉCRIT MAIS NON TESTÉ
+============================================
+
+D1. La couleur des ampoules RGB
+   `colour_data_v2` et `colour_data` sont mappés, trois encodages gérés,
+   couverts par des tests unitaires — mais aucune ampoule RGB n'a jamais été
+   branchée. À vérifier au premier achat.
+
+   Limite connue : changer la couleur rallume à pleine luminosité, la
+   luminosité étant portée par le même Data Point (Document-technique § 6.2).
+
+D2. Les autres familles d'appareils
+   Seule une prise a été validée de bout en bout. Les capteurs (porte,
+   fuite, mouvement), les thermostats et les volets sont mappés sans avoir
+   été confrontés à du matériel.
+
+D3. Le foyer partagé
+   L'isolation par compte technique est correcte par construction, jamais
+   vérifiée avec deux comptes réels.
+
+
+E. MISE EN SERVICE
+===================
+
+Détaillé dans lancemant.txt, section « Avant d'ouvrir à de vrais
+utilisateurs ». En résumé :
+
+E1. L'application Tuya est en MODE TEST — les inscriptions échoueront
+    au-delà d'un certain nombre de comptes.
+E2. Le quota d'appareils de l'IoT Core — au-delà, un appareil appairé cesse
+    de remonter au projet, sans erreur visible.
+E3. Compte Apple gratuit — profil à réinstaller tous les 7 jours, et
+    l'entitlement Wi-Fi reste désactivé.
+E4. Instance Render gratuite — mise en veille après 15 minutes, WebSocket
+    coupés, donc temps réel interrompu.
+E5. Base de données partagée entre développement et production : une
+    migration lancée depuis un poste touche les données du service déployé.
+    À séparer avant d'avoir de vraies données.
+
+
+F. DETTE TECHNIQUE ET ROBUSTESSE
+=================================
+
+F1. Notifications push : les jetons sont collectés, les préférences
+    stockées, mais rien n'appelle APNs ni FCM.
+
+F2. Limitation de débit : posée sur le claim de boîtier uniquement, à
+    généraliser aux autres routes.
+
+F3. README de l'API périmé : il annonce le connecteur Tuya « à écrire » et
+    « seul SimulatedConnector est enregistré », ce qui est faux depuis. À
+    reprendre pour éviter d'induire en erreur.
+
+F4. Aucun test côté application mobile : pas de harnais, alors que le
+    backend en compte 86 et le contrat 17. Les régressions d'interface ne
+    sont détectées qu'à l'œil.
+
+F5. Traces de diagnostic Tuya : les `[Tuya] …` et le `debugMode` du SDK sont
+    utiles tant que l'appairage se stabilise, à retirer avant une mise en
+    production réelle.
+
+F6. Prisma 6 contre extension VS Code en 7 : faux positifs dans l'éditeur
+    sur `url` et `directUrl`. Migration majeure à faire un jour, seule et
+    sur une branche.
+
+
+G. ORDRE SUGGÉRÉ
+=================
+
+Si l'objectif est un produit utilisable par quelqu'un d'autre que soi :
+
+  1. A1  Message Service Tuya — sans lui, l'app ment sur l'état des appareils
+  2. B1  Gestion des membres — sans elle, le foyer partagé n'existe pas
+  3. B2  Réglages de notifications + envoi push (F1)
+  4. B3  Comptes connectés (délier)
+  5. E5  Séparer les bases développement et production
+  6. E1  Passer l'application Tuya en production
+
+Si l'objectif est d'élargir le matériel pris en charge :
+
+  1. D1  Éprouver la couleur sur une ampoule RGB
+  2. A3  Module Android
+  3. A2  Connecteur Zigbee / MQTT

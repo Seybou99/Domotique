@@ -1,0 +1,359 @@
+DOCUMENT TECHNIQUE — PLATEFORME DOMOTIQUE « VEILLE ACTIVE »
+============================================================
+Dernière mise à jour : 25 août 2026
+
+Ce document sert à reprendre le projet sans son historique de développement.
+Il décrit ce qui existe, pourquoi c'est fait ainsi, et surtout ce qui a été
+vérifié en conditions réelles — la partie qu'on ne peut pas redécouvrir en
+lisant le code.
+
+Il ne remplace pas la documentation déjà en place, il l'aiguille :
+
+    README.md                      vue d'ensemble, état des briques
+    lancemant.txt                  comment lancer, dépanner, et les plafonds
+    apps/api/README.md             décisions du backend, schéma, connecteurs
+    apps/mobile/DESIGN-SYSTEM.md   règles d'interface, composants, écrans
+    packages/contract/README.md    le contrat REST et temps réel
+
+
+1. CE QU'EST LE PROJET
+=======================
+
+Une application de domotique : piloter les appareils connectés d'un foyer
+(prises, ampoules, capteurs), suivre leur consommation, et déclencher des
+scénarios.
+
+Le principe qui structure tout : **l'application ne pilote pas les appareils,
+le backend le fait.** Si l'application commandait directement, un scénario
+programmé à 23:30 ne partirait pas téléphone éteint, et un autre membre du
+foyer ne pourrait pas piloter ce que ce téléphone a appairé. L'application
+sert d'interface et, pour l'appairage seulement, de pont Bluetooth.
+
+
+2. ARCHITECTURE
+================
+
+Monorepo npm, trois paquets :
+
+    apps/api            backend Fastify + Prisma + PostgreSQL (Neon)
+    apps/mobile         application Expo / React Native
+    packages/contract   schémas Zod partagés : routes, domaine, événements
+
+Le contrat est la pièce centrale. Chaque route y est décrite une fois
+(méthode, chemin, paramètres, corps, réponse) et les deux côtés s'y réfèrent :
+le backend l'enregistre avec `registerRoute`, l'application l'appelle avec
+`api.call`. Un changement de contrat casse la compilation des deux côtés
+plutôt que de produire une erreur à l'exécution.
+
+Deux abstractions à ne pas confondre côté backend :
+
+    DeviceConnector      PILOTE des appareils (envoi de commandes, lecture
+                         d'état). Zigbee et Tuya en ont un.
+    ThirdPartyProvider   RELIE un compte et ÉNUMÈRE ce qu'il contient.
+                         Tuya en a un, Zigbee non.
+
+Tuya joue les deux rôles, d'où deux fichiers distincts :
+`src/devices/tuya/connector.ts` et `src/integrations/tuya.provider.ts`.
+
+L'état des appareils vit dans un « state store » (Redis en production,
+mémoire en développement). La base garde la structure, le store garde les
+valeurs chaudes, la table `state_changes` garde l'historique.
+
+
+3. LE CHEMIN D'UN APPAREIL TUYA, DE BOUT EN BOUT
+=================================================
+
+C'est le parcours le plus complexe du projet et celui qui a demandé le plus
+de mises au point. Le comprendre évite de refaire les mêmes erreurs.
+
+3.1 Appairage (application → appareil)
+---------------------------------------
+
+L'appairage se fait en BLUETOOTH, pas en mode AP. Les prises et ampoules
+récentes s'annoncent en Bluetooth tant qu'elles ne sont pas appairées et
+reçoivent les identifiants Wi-Fi par ce canal. Le mode AP — où le téléphone
+rejoint le point d'accès de l'appareil — est un protocole plus ancien que ce
+matériel n'utilise pas.
+
+Séquence, dans `apps/mobile/src/api/useTuyaPairing.ts` :
+
+  1. `startScan()`        écoute les annonces Bluetooth
+  2. l'utilisateur choisit un appareil découvert
+  3. `queryWifiList(uuid)` demande à l'appareil quels réseaux il capte
+  4. `appCredentials`     le backend fournit un compte technique Tuya
+  5. `signIn(...)`        le SDK ouvre ce compte
+  6. `reportSdkAccount`   l'application remonte l'identifiant Tuya (voir 4.3)
+  7. `ensureHome(...)`    un foyer Tuya, exigé par le SDK
+  8. `pairDevice(...)`    transmet le Wi-Fi par Bluetooth
+  9. surveillance du foyer Tuya jusqu'à voir l'appareil (voir 4.2)
+
+3.2 Import (appareil → foyer de l'application)
+-----------------------------------------------
+
+Un appareil appairé existe chez Tuya, pas dans notre base. L'import le fait
+entrer dans le foyer :
+
+    POST /v1/integrations/:account_id/import
+
+Il lit les appareils du compte technique, les crée en base avec leurs
+capacités ET leurs valeurs initiales, puis publie un événement `device_added`.
+
+3.3 Pilotage (application → backend → Tuya → appareil)
+-------------------------------------------------------
+
+    app → POST /v1/devices/:id/commands
+        → DeviceService.sendCommand
+        → TuyaConnector.sendCommand
+        → capabilityToDp() choisit le Data Point
+        → POST /v1.0/iot-03/devices/{id}/commands
+
+
+4. CE QUI A ÉTÉ VÉRIFIÉ EN CONDITIONS RÉELLES
+==============================================
+
+Chacun de ces points a coûté des heures de diagnostic. Ils ne se déduisent
+pas de la documentation Tuya, et plusieurs échouent SANS ERREUR.
+
+4.1 Le mode d'appairage
+------------------------
+Le mode AP (`startConfigWiFi(.AP, …)`) ne trouve jamais les appareils récents.
+Il faut `ThingSmartBLEManager` pour la découverte et
+`ThingSmartBLEWifiActivator` pour l'appairage.
+
+Symptôme si on se trompe : la recherche ne trouve rien, sans message.
+
+4.2 Le SDK n'annonce pas toujours l'appairage réussi
+-----------------------------------------------------
+Une fois passé sur le Wi-Fi, l'appareil REFUSE les connexions Bluetooth —
+comportement normal. Le SDK tente malgré tout de s'y reconnecter, échoue
+trois fois (`CoreBLEErrorDomain 400`), et conclut à un échec. Son delegate
+`didReceiveBLEWifiConfigDevice` n'est JAMAIS appelé, alors que le journal
+montre `addDevice:...` : l'appareil est bel et bien enregistré.
+
+Contournement en place : l'application interroge le foyer Tuya
+(`homeDevices`) et repère l'appareil à sa DATE D'ACTIVATION. Comparer les
+listes avant/après ne suffit pas — un réappairage ne crée pas d'entrée, il
+rafraîchit celle qui existe.
+
+4.3 Deux identifiants de compte, à ne pas confondre
+----------------------------------------------------
+    uid        `lumo-0b3182ee…`        émis par NOTRE backend, sert à SE CONNECTER
+    remoteUid  `we1786529169392zPj8A`  attribué par TUYA, sert à INTERROGER
+
+L'API `/v1.0/users/{uid}/devices` n'accepte que le second, et aucune route ne
+permet de passer de l'un à l'autre. L'application remonte donc le `remoteUid`
+après connexion (`POST /v1/integrations/:provider/app-account`).
+
+Symptôme si absent : l'appareil est en ligne dans la console Tuya, rattaché
+au projet, et l'import ne trouve rien.
+
+4.4 Deux routes de listing, selon l'origine de l'appareil
+----------------------------------------------------------
+    /v1.0/iot-01/associated-users/devices   comptes liés à la main en console
+    /v1.0/users/{remoteUid}/devices          comptes créés par notre app
+
+`listDevices` interroge les deux et fusionne. La première seule renvoyait une
+liste vide alors que l'appareil existait.
+
+4.5 Le code de commande dépend du modèle
+-----------------------------------------
+Une prise s'allume par `switch_1`, une ampoule par `switch_led`. Envoyer l'un
+à l'autre ne produit AUCUNE erreur : Tuya acquitte la requête, l'appareil
+l'ignore, et l'interface affiche un changement qui n'a pas eu lieu.
+
+`CAPABILITY_TO_DP` liste donc plusieurs codes par capacité, et
+`capabilityToDp` retient le premier que l'appareil déclare dans sa fiche.
+Corollaire : `parseSpecifications` doit garder les Data Points NON numériques
+(sans bornes), sinon les codes de commutation restent invisibles.
+
+4.6 Les échelles de valeurs
+----------------------------
+Les entiers Tuya portent une échelle : `add_ele` avec `scale:3` signifie que
+1234 vaut 1,234 kWh. Notre défaut valait 2 — la consommation était dix fois
+trop élevée, et rien ne l'aurait signalé : une valeur dix fois fausse reste
+plausible sur un relevé.
+
+Les fiches des appareils (`/v1.0/devices/{id}/specifications`) priment
+désormais sur nos défauts.
+
+4.7 L'allowlist IP du projet cloud
+-----------------------------------
+Si elle est active, TOUTE adresse non déclarée est rejetée (erreur 1114).
+Elle est aujourd'hui DÉSACTIVÉE, volontairement : l'IP d'un poste de
+développement change à chaque réseau, et une instance Render gratuite n'a pas
+d'adresse de sortie stable.
+
+Diagnostic : `npm run tuya:check` — il teste tous les centres de données et
+indique lequel répond.
+
+4.8 Le centre de données
+-------------------------
+« Western Europe » correspond à `openapi-weaz.tuyaeu.com`, PAS à
+`openapi.tuyaeu.com`. Le mauvais endpoint renvoie une erreur parlant d'IP non
+autorisée, ce qui envoie chercher très loin de la vraie cause.
+
+4.9 Le simulateur iOS ne peut pas lancer l'application
+-------------------------------------------------------
+Les SDK Tuya ne fournissent pas de tranche arm64 pour le simulateur.
+CocoaPods force donc `EXCLUDED_ARCHS = arm64`, l'application se compile en
+x86_64, et un Mac Apple Silicon a besoin de Rosetta pour l'exécuter — sur un
+runtime iOS 18.6 uniquement, les runtimes iOS 26 étant arm64 seuls.
+
+Tout ce qui touche à l'appairage exige de toute façon un iPhone physique :
+le simulateur n'a ni Bluetooth ni Wi-Fi réels.
+
+
+5. ÉTAT D'AVANCEMENT
+=====================
+
+Ce qui fonctionne, vérifié sur matériel réel (prise LSC Power Plug FR) :
+
+  - découverte Bluetooth des appareils non appairés
+  - liste des réseaux Wi-Fi vus par l'appareil
+  - appairage complet, y compris le réappairage d'un appareil connu
+  - mémorisation du réseau (trousseau) pour les appairages suivants
+  - import dans le foyer, avec état initial
+  - allumage et extinction, effectifs sur l'appareil
+  - lecture de la consommation et de la puissance
+
+Ce qui est écrit mais NON éprouvé sur matériel :
+
+  - la couleur des ampoules RGB (`colour_data_v2`, trois encodages gérés,
+    couvert par des tests unitaires seulement)
+  - le module Android : il expose encore l'ancien mode AP et n'a pas été mis
+    à niveau vers le Bluetooth. Il ne compile nulle part — il n'y a pas de
+    dossier `android/` dans le projet.
+
+Ce qui n'existe pas encore :
+
+  - connecteur Zigbee : `MQTT_BROKER_URL` est vide, donc « Aucun connecteur
+    Zigbee actif ». L'appairage Zigbee échoue par conception.
+  - notifications push
+  - écrans : gestion des membres, comptes connectés, réglages de
+    notifications, éditeur de scénario complet
+  - remontée d'état en temps réel depuis Tuya (voir 6.1)
+
+
+6. LIMITES CONNUES, ET CE QU'IL FAUDRAIT FAIRE
+===============================================
+
+6.1 L'état affiché est celui commandé, pas celui mesuré
+--------------------------------------------------------
+`TUYA_POLL_INTERVAL_S=0` : rien n'interroge les appareils. Après une commande,
+le backend enregistre l'état commandé d'office (`ackSemantics: 'gateway'`).
+
+Conséquence : si l'appareil est éteint par son bouton physique, l'application
+continue d'afficher « allumé ». Et le graphique de consommation d'un appareil
+réel reste vide, puisque aucun relevé n'alimente `state_changes`.
+
+La vraie réponse est le **Message Service de Tuya**, qui pousse les
+changements au lieu qu'on les demande : pas de quota consommé en continu, et
+un état réellement à jour. C'est le chantier le plus utile à venir.
+
+Solution d'attente : `TUYA_POLL_INTERVAL_S=300`, en surveillant le quota.
+
+6.2 La luminosité en mode couleur
+----------------------------------
+Chez Tuya, la luminosité d'une ampoule en mode couleur est portée par le `v`
+du Data Point couleur, pas par `bright_value`. `capabilityToDp` envoie donc
+`v: 1000` — pleine puissance — faute de connaître l'état courant. Changer la
+couleur d'une ampoule tamisée la rallumera à fond.
+
+Le corriger proprement demande de lire l'état avant d'envoyer la commande,
+donc de modifier le service de commandes, pas le mapping.
+
+6.3 Le préremplissage du nom du réseau
+---------------------------------------
+`currentSsid` est implémenté mais renvoie toujours `null` : l'entitlement
+`com.apple.developer.networking.wifi-info` exige un compte Apple payant, et il
+a été RETIRÉ du plugin pour que la signature passe avec un compte gratuit.
+
+Pour le réactiver, dans `apps/mobile/plugins/withTuya.js` : la fonction
+`withWifiInfo` existe toujours, seul son appel a été retiré de la chaîne. Le
+rétablir revient à ajouter `result = withWifiInfo(result);` après
+`withTuyaInfoPlist`, puis à relancer `npx expo prebuild -p ios`.
+
+Sans lui, la mémorisation du réseau prend le relais dès le second appareil.
+
+
+7. REPRENDRE LE TRAVAIL
+========================
+
+7.1 Lire d'abord
+-----------------
+    lancemant.txt        pour lancer le projet et dépanner
+    apps/api/README.md   pour les décisions du backend
+    ce document, § 4     pour ne pas refaire les erreurs déjà faites
+
+7.2 Vérifier que tout marche encore
+------------------------------------
+    npm run typecheck    les trois paquets
+    npm run test         86 tests API + 17 tests contrat
+    npm run tuya:check   accès au cloud Tuya
+
+7.3 Diagnostiquer l'appairage
+------------------------------
+L'application trace les rappels du SDK dans le terminal Metro :
+
+    [Tuya] signIn : ok — uid=…
+    [Tuya] ensureHome : foyer existant homeId=…
+    [Tuya] startConfigBLEWifiDevice : success
+    [Tuya] homeDevices : N appareil(s)
+
+Les journaux internes du SDK Tuya sont activés en développement
+(`debugMode`), visibles dans la console Xcode. C'est le seul endroit où
+apparaissent les erreurs Bluetooth réelles.
+
+Chaque commande trace le Data Point envoyé, côté serveur :
+
+    {"msg":"tuya command","device":"…","capability":"on_off",
+     "code":"switch_1","value":false,"declared":[…]}
+
+Si `code` ne figure pas dans `declared`, la commande partira sans effet.
+
+7.4 Les prochains chantiers, par ordre d'utilité
+-------------------------------------------------
+  1. Message Service Tuya — état réel et consommation vivante (§ 6.1)
+  2. Mise à niveau du module Android vers le Bluetooth (§ 5)
+  3. Connecteur Zigbee / MQTT
+  4. Écrans restants : membres, comptes connectés, notifications
+  5. Notifications push
+
+
+8. ENVIRONNEMENTS ET SECRETS
+=============================
+
+Backend déployé : https://domotique-q4z2.onrender.com  (Render, offre gratuite)
+Base de données  : Neon PostgreSQL, région us-east-2
+Projet Tuya      : « domotique », Western Europe Data Center
+Application Tuya : « Lumo1 », OEM App, liée au projet en Automatic Link
+
+Aucun secret n'est versionné. Les fichiers à créer sur un nouveau poste :
+
+    apps/api/.env                     voir .env.example
+    apps/mobile/.env                  facultatif (voir lancemant.txt)
+    apps/mobile/secrets/tuya.json     clés SDK iOS et Android
+    apps/mobile/secrets/ios_core_sdk/ archive ThingSmartCryption, liée au
+                                      bundle identifier, téléchargée depuis la
+                                      console Tuya
+
+Les archives des SDK Tuya (iOS_SDK/, Android_SDK/) sont volontairement hors
+du dépôt : binaires du fabricant, liés au bundle identifier.
+
+
+9. CONVENTIONS DE CODE
+=======================
+
+Le projet suit des règles strictes, visibles dans le code existant :
+
+  - Les commentaires expliquent POURQUOI, jamais QUOI. Un commentaire qui
+    paraphrase le code est à supprimer.
+  - Les décisions non évidentes portent leur justification, y compris ce qui
+    a été vérifié en conditions réelles.
+  - Français partout : interface, commentaires, messages d'erreur, commits.
+  - Côté mobile, aucune couleur en dur : tout passe par `useTheme()` et les
+    rôles du thème (voir DESIGN-SYSTEM.md).
+  - Les sous-composants d'un écran sont déclarés AU NIVEAU DU MODULE, jamais
+    dans le composant : sinon React démonte le sous-arbre à chaque rendu et
+    un champ de saisie perd le focus à chaque caractère.
+  - Les erreurs remontent un message utile à l'utilisateur, pas un code.

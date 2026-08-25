@@ -36,6 +36,57 @@ export class DeviceService {
    */
   private onState: ((deviceId: string, homeId: string, value: CapabilityValue) => void) | null = null;
 
+  /** Dernier rafraîchissement par foyer, pour ne pas le répéter à chaque écran. */
+  private readonly lastRefresh = new Map<string, number>();
+
+  /**
+   * Relit l'état des appareils d'un foyer auprès de leur source.
+   *
+   * **Rafraîchir quand on regarde, plutôt que sonder en permanence.** Les
+   * appareils pilotés par un cloud ne préviennent pas d'un changement : une
+   * prise éteinte par son bouton physique resterait « allumée » indéfiniment.
+   * Sonder en continu corrigerait cela, mais consommerait le quota du
+   * fournisseur jour et nuit — y compris quand personne n'ouvre l'application,
+   * c'est-à-dire l'essentiel du temps.
+   *
+   * L'appel ne bloque pas la réponse : les valeurs relues partent par le canal
+   * temps réel, et l'écran se met à jour de lui-même une seconde plus tard.
+   *
+   * Le garde-fou est en mémoire, donc propre à l'instance. C'est suffisant
+   * ici : avec plusieurs instances, chacune rafraîchirait au plus une fois par
+   * fenêtre, ce qui reste borné.
+   */
+  async refreshHome(homeId: string, minIntervalMs = 30_000): Promise<void> {
+    const previous = this.lastRefresh.get(homeId) ?? 0;
+    if (Date.now() - previous < minIntervalMs) return;
+    this.lastRefresh.set(homeId, Date.now());
+
+    const rows = await this.prisma.device.findMany({
+      where: { homeId, protocol: { not: 'zigbee' } },
+      select: { id: true, externalId: true, unitId: true, accountId: true, protocol: true },
+    });
+
+    for (const row of rows) {
+      const connector = this.connectors.get(row.protocol as Protocol);
+      if (!connector) continue;
+      try {
+        const values = await connector.getState({
+          deviceId: row.id,
+          externalId: row.externalId,
+          unitId: row.unitId,
+          accountId: row.accountId,
+        });
+        for (const value of values) {
+          await this.recordState(row.id, homeId, value, new Date(), { kind: 'device' });
+        }
+      } catch {
+        // Un appareil injoignable ne doit pas priver les autres de leur mise à
+        // jour : le foyer entier échouerait pour une seule prise débranchée.
+        continue;
+      }
+    }
+  }
+
   setStateListener(listener: (deviceId: string, homeId: string, value: CapabilityValue) => void) {
     this.onState = listener;
   }

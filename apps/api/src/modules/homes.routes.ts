@@ -63,6 +63,23 @@ export function registerHomeRoutes(app: FastifyInstance, ctx: Ctx) {
     const role = await access.requireHome(userId!, params.home_id);
     const eventId = await events.lastEventId(params.home_id);
 
+    /**
+     * Relecture de l'état auprès des sources, sans attendre le résultat.
+     *
+     * C'est l'ouverture d'un écran qui déclenche le rafraîchissement : les
+     * appareils pilotés par un cloud ne signalent pas les changements survenus
+     * hors de l'application, et les sonder en continu consommerait le quota du
+     * fournisseur même quand personne ne regarde.
+     *
+     * Sans `await` : la réponse part avec l'état connu, et les valeurs relues
+     * arrivent par le canal temps réel dans la seconde. Attendre ici
+     * ralentirait chaque écran du temps d'un aller-retour vers le cloud, par
+     * appareil.
+     */
+    void ctx.devices.refreshHome(params.home_id).catch(() => {
+      // Rafraîchissement de confort : son échec ne doit pas teinter la réponse.
+    });
+
     const [home, roomRows, deviceRows, unitRows] = await Promise.all([
       prisma.home.findUnique({ where: { id: params.home_id } }),
       prisma.room.findMany({ where: { homeId: params.home_id }, orderBy: { sortOrder: 'asc' } }),

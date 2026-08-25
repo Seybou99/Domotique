@@ -102,6 +102,43 @@ AUTRES COMMANDES UTILES
     npm run tuya:check  teste les centres de données Tuya et indique le bon
 
 
+AVANT D'OUVRIR À DE VRAIS UTILISATEURS
+---------------------------------------
+
+Rien à faire pour développer : un nouvel utilisateur qui s'inscrit obtient son
+compte technique Tuya, appaire ses appareils et les importe sans aucune
+intervention. Deux plafonds attendent en revanche la mise en service, et aucun
+des deux ne prévient avant de bloquer.
+
+1. L'application Tuya est en MODE TEST.
+   Les journaux du SDK le répètent à chaque lancement :
+     « This application is for testing only, but not for commercial use.
+       If the number of registered users reaches the limit, new users
+       cannot be registered. »
+   Au-delà d'un certain nombre de comptes créés, les inscriptions échoueront.
+   À corriger dans la console Tuya (iot.tuya.com > App), en faisant passer
+   l'application en production.
+
+2. Le quota d'appareils de l'IoT Core.
+   Le rattachement automatique des appareils au projet cloud ne fonctionne
+   que « si le quota d'appareils de votre IoT Core est suffisant » — c'est la
+   console qui le dit, sous Cloud > Devices > Link My App. Au-delà, un appareil
+   appairé cesse de remonter au projet, sans erreur visible : l'appairage
+   réussit, mais l'import ne trouve rien.
+   À surveiller dans Cloud > Development > domotique > Service API.
+
+Deux autres points de mise en service, sans rapport avec Tuya :
+
+  - Le compte Apple est gratuit : le profil expire tous les 7 jours et
+    l'application doit être réinstallée par câble. Un compte payant porte
+    cette limite à un an, et débloquerait l'entitlement Access WiFi
+    Information (préremplissage du nom du réseau, aujourd'hui désactivé).
+
+  - L'instance Render est gratuite : elle s'endort après 15 minutes et met
+    une cinquantaine de secondes à repartir. Ses WebSocket sont coupés à
+    chaque mise en veille, ce qui interrompt le temps réel.
+
+
 EN CAS DE PROBLÈME
 -------------------
 

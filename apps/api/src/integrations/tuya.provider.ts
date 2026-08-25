@@ -106,11 +106,12 @@ export class TuyaProvider implements ThirdPartyProvider {
       for (const entry of [...(spec.functions ?? []), ...(spec.status ?? [])]) {
         try {
           const values = JSON.parse(entry.values) as Partial<DpSpec>;
-          // Les Data Points booléens ou énumérés n'ont pas de bornes : les
-          // retenir écraserait les défauts avec des valeurs vides.
-          if (typeof values.min === 'number' && typeof values.max === 'number') {
-            parsed[entry.code] = values as DpSpec;
-          }
+          // Sans bornes pour les booléens et les énumérés : ils n'en ont pas,
+          // mais leur présence dit quel code l'appareil accepte.
+          parsed[entry.code] =
+            typeof values.min === 'number' && typeof values.max === 'number'
+              ? (values as DpSpec)
+              : {};
         } catch {
           continue;
         }

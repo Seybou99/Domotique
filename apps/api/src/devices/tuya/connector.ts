@@ -100,6 +100,27 @@ export class TuyaConnector implements DeviceConnector {
       throw new AppError('validation_failed', `Capacité ${target.type} non pilotable en Tuya`);
     }
 
+    /**
+     * Trace du Data Point réellement envoyé.
+     *
+     * Le code varie d'un modèle à l'autre pour une même capacité, et se tromper
+     * ne produit aucune erreur : le fournisseur acquitte la requête, l'appareil
+     * l'ignore, et l'interface affiche un changement qui n'a pas eu lieu. Savoir
+     * quel code est parti est la seule façon de distinguer ce cas d'une panne.
+     */
+    console.log(
+      JSON.stringify({
+        msg: 'tuya command',
+        device: ref.externalId,
+        capability: target.type,
+        code: dp.code,
+        value: dp.value,
+        // Les codes déclarés par l'appareil : si le nôtre n'y figure pas, la
+        // commande partira sans effet.
+        declared: Object.keys(specs),
+      }),
+    );
+
     // `undefined` = identifiants du projet ; `null` signifierait « requête
     // d'obtention de jeton », ce qui n'est pas le cas ici.
     await this.transport.request(
@@ -250,7 +271,13 @@ export class TuyaConnector implements DeviceConnector {
 export function parseSpecifications(response: SpecificationResponse): Record<string, DpSpec> {
   const out: Record<string, DpSpec> = {};
   for (const entry of [...(response.functions ?? []), ...(response.status ?? [])]) {
-    if (entry.type !== 'Integer') continue;
+    // Les Data Points non numériques sont retenus sans bornes : ils n'en ont
+    // pas, mais leur présence indique quel code l'appareil accepte. C'est ainsi
+    // qu'une prise se commande par `switch_1` et une ampoule par `switch_led`.
+    if (entry.type !== 'Integer') {
+      out[entry.code] ??= {};
+      continue;
+    }
     try {
       const parsed = JSON.parse(entry.values) as Partial<DpSpec>;
       if (typeof parsed.min === 'number' && typeof parsed.max === 'number') {

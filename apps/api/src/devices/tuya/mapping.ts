@@ -13,7 +13,12 @@ import type { CapabilityValue, WritableCapabilityValue } from '@domotique/contra
  * ci-dessous ne servent que si l'appel de spécification a échoué.
  */
 
-export type DpSpec = { min: number; max: number; scale?: number; step?: number };
+export type DpSpec = { min?: number; max?: number; scale?: number; step?: number };
+
+/** Une plage n'existe que sur les Data Points numériques. */
+function hasRange(spec: DpSpec | undefined): spec is DpSpec & { min: number; max: number } {
+  return typeof spec?.min === 'number' && typeof spec.max === 'number';
+}
 
 /** Correspondance code DP → capacité du contrat. */
 const DP_TO_CAPABILITY: Record<string, CapabilityValue['type']> = {
@@ -42,13 +47,23 @@ const DP_TO_CAPABILITY: Record<string, CapabilityValue['type']> = {
   colour_data: 'color_hs',
 };
 
-const CAPABILITY_TO_DP: Partial<Record<CapabilityValue['type'], string>> = {
-  on_off: 'switch_led',
-  brightness: 'bright_value_v2',
-  color_temp: 'temp_value_v2',
-  color_hs: 'colour_data_v2',
-  position: 'percent_control',
-  target_temperature: 'temp_set',
+/**
+ * Codes de commande acceptés, par ordre de préférence.
+ *
+ * **Une capacité, plusieurs codes selon l'appareil.** Une ampoule s'allume par
+ * `switch_led`, une prise par `switch_1` — envoyer l'un à l'autre ne provoque
+ * aucune erreur : le fournisseur accepte la requête, et l'appareil l'ignore.
+ * Vérifié en conditions réelles sur une prise dont la fiche ne déclare que
+ * `switch_1` : la commande partait en `switch_led`, était acquittée, et rien ne
+ * se passait. Le code retenu est donc le premier que l'appareil déclare.
+ */
+const CAPABILITY_TO_DP: Partial<Record<CapabilityValue['type'], string[]>> = {
+  on_off: ['switch_led', 'switch_1', 'switch'],
+  brightness: ['bright_value_v2', 'bright_value'],
+  color_temp: ['temp_value_v2', 'temp_value'],
+  color_hs: ['colour_data_v2', 'colour_data'],
+  position: ['percent_control'],
+  target_temperature: ['temp_set'],
 };
 
 const DEFAULT_SPEC: Record<string, DpSpec> = {
@@ -119,14 +134,17 @@ function removeScale(value: number, spec: DpSpec | undefined): number {
 }
 
 /** Ramène une valeur d'une plage native vers 0-100. */
-export function toPercent(raw: number, spec: DpSpec): number {
+export function toPercent(raw: number, spec: DpSpec & { min: number; max: number }): number {
   if (spec.max === spec.min) return 0;
   const ratio = (raw - spec.min) / (spec.max - spec.min);
   return Math.round(Math.min(1, Math.max(0, ratio)) * 100);
 }
 
 /** Opération inverse : 0-100 vers la plage native de l'appareil. */
-export function fromPercent(percent: number, spec: DpSpec): number {
+export function fromPercent(
+  percent: number,
+  spec: DpSpec & { min: number; max: number },
+): number {
   const ratio = Math.min(100, Math.max(0, percent)) / 100;
   return Math.round(spec.min + ratio * (spec.max - spec.min));
 }
@@ -152,11 +170,11 @@ export function dpToCapability(
       return { type: 'leak', value: value === 'alarm' ? 'wet' : 'dry' };
     case 'brightness':
     case 'position':
-      return typeof value === 'number' && spec
+      return typeof value === 'number' && hasRange(spec)
         ? { type, value: toPercent(value, spec) }
         : null;
     case 'color_temp': {
-      if (typeof value !== 'number' || !spec) return null;
+      if (typeof value !== 'number' || !hasRange(spec)) return null;
       const ratio = toPercent(value, spec) / 100;
       return { type: 'color_temp', value: Math.round(KELVIN.min + ratio * (KELVIN.max - KELVIN.min)) };
     }
@@ -181,8 +199,10 @@ export function capabilityToDp(
   target: WritableCapabilityValue,
   specs: Record<string, DpSpec> = {},
 ): { code: string; value: unknown } | null {
-  const code = CAPABILITY_TO_DP[target.type];
-  if (!code) return null;
+  const candidates = CAPABILITY_TO_DP[target.type];
+  if (!candidates?.length) return null;
+  // Le premier code que l'appareil déclare ; à défaut de fiche, le plus courant.
+  const code = candidates.find((candidate) => candidate in specs) ?? candidates[0]!;
   const spec = specs[code] ?? DEFAULT_SPEC[code];
 
   switch (target.type) {
@@ -190,9 +210,9 @@ export function capabilityToDp(
       return { code, value: target.value };
     case 'brightness':
     case 'position':
-      return spec ? { code, value: fromPercent(target.value, spec) } : null;
+      return hasRange(spec) ? { code, value: fromPercent(target.value, spec) } : null;
     case 'color_temp': {
-      if (!spec) return null;
+      if (!hasRange(spec)) return null;
       const ratio = (target.value - KELVIN.min) / (KELVIN.max - KELVIN.min);
       return { code, value: fromPercent(Math.min(1, Math.max(0, ratio)) * 100, spec) };
     }

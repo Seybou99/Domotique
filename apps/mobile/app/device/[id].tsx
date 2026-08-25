@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { Alert, Pressable, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import type { CapabilityState, ChangeOrigin } from '@domotique/contract';
 import {
+  Button,
   Card,
   Divider,
   EnergyChart,
@@ -12,13 +13,14 @@ import {
   Txt,
   VerticalLevelSlider,
 } from '../../src/components';
-import { Screen } from '../../src/screens/shared';
+import { Screen, messageFor } from '../../src/screens/shared';
 import { useTheme } from '../../src/theme/ThemeProvider';
 import { radius, space } from '../../src/theme/tokens';
 import { useHome } from '../../src/api/HomeProvider';
 import {
   useDeviceEnergy,
   useDeviceHistory,
+  useDeviceMutations,
   useHomeState,
   useSendCommand,
   type EnergyRange,
@@ -33,6 +35,8 @@ export default function DeviceDetail() {
   const state = useHomeState(home?.id);
   const history = useDeviceHistory(id);
   const { send } = useSendCommand(home?.id);
+  const deviceMutations = useDeviceMutations(home?.id);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const device = state.data?.devices.find((d) => d.id === id);
   const room = state.data?.rooms.find((r) => r.id === device?.room_id);
@@ -190,10 +194,53 @@ export default function DeviceDetail() {
               </Card>
             )}
           </View>
+
+          {removeError && (
+            <Card tint="danger">
+              <Txt variant="caption">{removeError}</Txt>
+            </Card>
+          )}
+
+          {/* Retirer un appareil est irréversible côté foyer, mais sans effet sur
+              l'appareil lui-même : il reste appairé chez son fabricant, et se
+              réimporte depuis « Compte connecté ». Le dire évite de croire qu'on
+              vient de le réinitialiser. */}
+          <Card style={{ gap: space.sm }}>
+            <Txt variant="micro" tone="secondary">
+              Retirer du foyer
+            </Txt>
+            <Txt variant="caption" tone="secondary">
+              L’appareil disparaît de l’application et de vos scénarios. Il reste appairé chez son
+              fabricant : vous pourrez le réimporter sans le reconfigurer.
+            </Txt>
+            <Button
+              label="Retirer l’appareil"
+              variant="danger"
+              full
+              loading={deviceMutations.remove.isPending}
+              onPress={confirmRemove}
+            />
+          </Card>
         </>
       )}
     </Screen>
   );
+
+  function confirmRemove() {
+    if (!device) return;
+    Alert.alert(`Retirer « ${device.name} » ?`, 'L’appareil quittera ce foyer et ses scénarios.', [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Retirer',
+        style: 'destructive',
+        onPress: () =>
+          deviceMutations.remove
+            .mutateAsync(device.id)
+            .then(() => router.back())
+            .catch((caught: unknown) => setRemoveError(messageFor(caught))),
+      },
+    ]);
+  }
 }
 
 /** Mesures affichées dans la carte dédiée : tout sauf l'énergie, qui a la sienne. */

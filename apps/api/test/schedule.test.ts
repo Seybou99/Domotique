@@ -297,6 +297,11 @@ describe('connecteur Tuya', () => {
   it('lit les bornes réelles de l’appareil plutôt que de les deviner', async () => {
     const { parseSpecifications } = await import('../src/devices/tuya/connector.js');
     expect(parseSpecifications(SPECS)).toEqual({
+      // Sans bornes, mais retenu : sa présence dit que cet appareil se commande
+      // par `switch_1`, et non par le `switch_led` des ampoules. L'écarter
+      // faisait partir la commande sur un code que la prise ignore — acquittée
+      // par le fournisseur, sans le moindre effet.
+      switch_1: {},
       bright_value_v2: { min: 0, max: 100, scale: 0, step: 1 },
       cur_power: { min: 0, max: 50000, scale: 1 },
     });

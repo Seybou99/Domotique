@@ -69,3 +69,37 @@ describe('allumage', () => {
     }
   });
 });
+
+describe('choix du code de commande', () => {
+  it('commande une prise par le code qu’elle déclare', () => {
+    // Fiche réelle de la prise LSC : elle n'expose que `switch_1`.
+    const specs = { switch_1: {}, countdown_1: { min: 0, max: 86400 } };
+    expect(capabilityToDp({ type: 'on_off', value: false }, specs)).toEqual({
+      code: 'switch_1',
+      value: false,
+    });
+  });
+
+  it('commande une ampoule par son propre code', () => {
+    expect(capabilityToDp({ type: 'on_off', value: true }, { switch_led: {} })).toEqual({
+      code: 'switch_led',
+      value: true,
+    });
+  });
+
+  it('retient le code le plus courant quand la fiche est absente', () => {
+    expect(capabilityToDp({ type: 'on_off', value: true })).toEqual({
+      code: 'switch_led',
+      value: true,
+    });
+  });
+
+  it('suit les bornes déclarées pour la luminosité, pas les nôtres', () => {
+    // Ancien modèle : 25-255 au lieu de 10-1000.
+    const specs = { bright_value: { min: 25, max: 255 } };
+    expect(capabilityToDp({ type: 'brightness', value: 100 }, specs)).toEqual({
+      code: 'bright_value',
+      value: 255,
+    });
+  });
+});

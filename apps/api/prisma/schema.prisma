@@ -387,6 +387,11 @@ model NativeSdkAccount {
   userId      String   @db.Uuid
   provider    Protocol
   uid         String   @unique
+  /// Identifiant attribué par le fournisseur, distinct de `uid` qui sert à se
+  /// connecter. Lui seul permet d'interroger les appareils du compte : vérifié
+  /// en conditions réelles, l'API refuse l'identifiant de connexion. Nul tant
+  /// que l'application ne s'est pas connectée au moins une fois.
+  remoteUid   String?
   passwordEnc Bytes
   keyVersion  Int      @default(1)
   countryCode String   @default("33")

@@ -200,7 +200,20 @@ export function useTuyaPairing() {
         void TuyaPairing.stopScan();
 
         const credentials = await integrations.appCredentials.mutateAsync(PROVIDER);
-        await TuyaPairing.signIn(credentials.uid, credentials.password, credentials.country_code);
+        const account = await TuyaPairing.signIn(
+          credentials.uid,
+          credentials.password,
+          credentials.country_code,
+        );
+
+        // L'identifiant que le fournisseur attribue au compte, remonté au
+        // serveur : c'est le seul avec lequel il pourra lister les appareils.
+        // Un échec ici ne doit pas empêcher l'appairage — il se rattrapera à la
+        // tentative suivante, et l'import dira ce qui manque.
+        void integrations.reportSdkAccount
+          .mutateAsync({ provider: PROVIDER, remoteUid: account.uid })
+          .catch(() => {});
+
         const { homeId } = await TuyaPairing.ensureHome(home.name);
 
         subscriptions.current.push(

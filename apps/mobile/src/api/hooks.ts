@@ -422,6 +422,21 @@ export function useIntegrations(homeId: string | undefined) {
       api.call(integrationsApi.appCredentials, { params: { provider } }),
   });
 
+  /**
+   * Identifiant que le fournisseur attribue au compte technique.
+   *
+   * Il n'est connu qu'après la connexion du SDK, et le serveur en a besoin pour
+   * lister les appareils : celui qu'il a émis sert à ouvrir le compte, pas à
+   * l'interroger.
+   */
+  const reportSdkAccount = useMutation({
+    mutationFn: ({ provider, remoteUid }: { provider: ThirdPartyProviderName; remoteUid: string }) =>
+      api.call(integrationsApi.reportSdkAccount, {
+        params: { provider },
+        body: { remote_uid: remoteUid },
+      }),
+  });
+
   const oauthUrl = useMutation({
     mutationFn: (provider: ThirdPartyProviderName) =>
       api.call(integrationsApi.oauthUrl, { params: { home_id: homeId!, provider } }),
@@ -466,7 +481,16 @@ export function useIntegrations(homeId: string | undefined) {
     },
   });
 
-  return { accounts, linkConsole, appCredentials, oauthUrl, complete, importDevices, unlink };
+  return {
+    accounts,
+    linkConsole,
+    appCredentials,
+    reportSdkAccount,
+    oauthUrl,
+    complete,
+    importDevices,
+    unlink,
+  };
 }
 
 export function useDiscoveredDevices(accountId: string | undefined) {

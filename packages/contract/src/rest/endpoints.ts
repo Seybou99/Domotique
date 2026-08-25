@@ -412,6 +412,24 @@ export const integrations = {
     }),
   }),
 
+  /**
+   * Identifiant que le fournisseur a attribué au compte technique.
+   *
+   * Distinct de celui qui sert à s'y connecter, et connu de la seule
+   * application : le SDK le révèle après la connexion. Le serveur en a besoin
+   * pour retrouver les appareils du compte — vérifié en conditions réelles,
+   * l'API du fournisseur refuse l'identifiant de connexion et n'offre aucun
+   * moyen de passer de l'un à l'autre.
+   */
+  reportSdkAccount: defineEndpoint({
+    method: 'POST',
+    path: '/integrations/:provider/app-account',
+    summary: 'Identifiant distant du compte technique, remonté par l’application',
+    params: z.object({ provider: protocol.exclude(['zigbee']) }),
+    body: z.object({ remote_uid: z.string().min(1) }),
+    response: z.object({ ok: z.literal(true) }),
+  }),
+
   oauthCallback: defineEndpoint({
     method: 'POST',
     path: '/homes/:home_id/integrations/:provider/callback',

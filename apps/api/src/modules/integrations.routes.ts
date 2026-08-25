@@ -173,6 +173,22 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: Ctx) {
     return { uid: created.uid, password, country_code: created.countryCode };
   });
 
+  /**
+   * Enregistrement de l'identifiant distant du compte technique.
+   *
+   * L'application est seule à le connaître : le fournisseur ne le révèle qu'au
+   * SDK, après connexion. Sans lui, le serveur ne peut pas lister les appareils
+   * du compte — et un appareil appairé reste introuvable, en ligne et rattaché
+   * au projet, sans que rien ne l'explique.
+   */
+  registerRoute(app, ctx, integrationsApi.reportSdkAccount, async ({ userId, params, body }) => {
+    await prisma.nativeSdkAccount.update({
+      where: { userId_provider: { userId: userId!, provider: params.provider as Protocol } },
+      data: { remoteUid: body.remote_uid },
+    });
+    return { ok: true as const };
+  });
+
   registerRoute(app, ctx, integrationsApi.oauthCallback, async ({ userId, params, body }) => {
     await access.requireHome(userId!, params.home_id, 'admin');
     const provider = requireProvider(params.provider);
@@ -242,10 +258,12 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: Ctx) {
    */
   async function sdkAccountUids(homeId: string, provider: Protocol): Promise<string[]> {
     const accounts = await prisma.nativeSdkAccount.findMany({
-      where: { provider, user: { memberships: { some: { homeId } } } },
-      select: { uid: true },
+      where: { provider, user: { memberships: { some: { homeId } } }, remoteUid: { not: null } },
+      select: { remoteUid: true },
     });
-    return accounts.map((account) => account.uid);
+    // `remoteUid` et non `uid` : le second sert à ouvrir le compte, le premier à
+    // l'interroger. L'API du fournisseur rejette le second.
+    return accounts.map((account) => account.remoteUid!);
   }
 
   registerRoute(app, ctx, integrationsApi.discover, async ({ userId, params }) => {

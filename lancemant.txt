@@ -1,14 +1,128 @@
-Au quotidien — deux terminaux
+LANCER LE PROJET
+================
+
+Toutes les commandes courantes se lancent depuis la RACINE du dépôt :
+
+    cd ~/Developer/Domotique
+
+C'est un monorepo npm : les scripts `api` et `mobile` n'existent qu'à la racine.
+Les lancer depuis apps/api ou apps/mobile donne « Missing script ». Depuis un
+sous-dossier, il faut employer le nom local du script (voir plus bas).
+
+Structure :
+
+    apps/api      le backend (Fastify + Prisma + PostgreSQL)
+    apps/mobile   l'application (Expo / React Native)
+    packages/contract   le contrat partagé entre les deux
+
+
+AU QUOTIDIEN — DEUX TERMINAUX
+-----------------------------
+
 Terminal 1 — le backend :
 
+    cd ~/Developer/Domotique
+    npm run api
 
-npm run api
-Attends API prête sur http://localhost:3000/v1.
+Attends la ligne « API prête sur http://localhost:3000/v1 ».
 
-Terminal 2 — l'app :
+Terminal 2 — l'application :
+
+    cd ~/Developer/Domotique
+    npm run mobile
+
+Puis « i » pour le simulateur iOS, « a » pour Android.
+
+Sur l'écran de connexion, le bouton « Compte de démonstration » connecte
+directement. Sinon : demo@domotique.local / demo-mot-de-passe
 
 
-npm run mobile
-Puis tape i pour ouvrir le simulateur iOS (ou a pour Android).
+LE BACKEND EST AUSSI DÉPLOYÉ
+-----------------------------
 
-Sur l'écran de connexion, le bouton « Compte de démonstration » te connecte directement. Sinon : demo@domotique.local / demo-mot-de-passe.
+    https://domotique-q4z2.onrender.com
+
+apps/mobile/.env pointe actuellement dessus, donc le terminal 1 n'est pas
+nécessaire pour travailler sur l'interface. Commenter la ligne
+EXPO_PUBLIC_API_URL de ce fichier fait revenir l'application sur l'API locale :
+elle déduit alors l'adresse de celle de Metro, ce qui vaut pour le simulateur
+comme pour un téléphone, sans rien à corriger en changeant de réseau.
+
+L'instance gratuite s'endort après 15 minutes sans activité : la première
+requête qui la réveille peut prendre une cinquantaine de secondes.
+
+
+SUR UN IPHONE PHYSIQUE
+-----------------------
+
+Nécessaire pour tout ce qui touche à l'appairage Tuya : le simulateur n'a ni
+Wi-Fi ni Bluetooth réels.
+
+    cd ~/Developer/Domotique/apps/mobile
+    npx expo run:ios --device
+
+Prérequis, une fois pour toutes :
+  - iPhone branché en USB, déverrouillé, « Faire confiance à cet ordinateur »
+  - Mode développeur activé sur le téléphone
+    (Réglages > Confidentialité et sécurité > Mode développeur, puis redémarrage)
+  - Compte Apple ajouté dans Xcode (Settings > Accounts)
+  - Au premier lancement, approuver le certificat sur le téléphone
+    (Réglages > Général > VPN et gestion de l'appareil)
+
+chaque semaine: Si le build échoue sur « No profiles for 'com.lumo.dev.app' were found », c'est
+qu'Xcode doit régénérer le profil de signature — expo ne sait pas le demander :
+
+    cd ~/Developer/Domotique/apps/mobile/ios
+    xcodebuild -workspace appdomotique.xcworkspace -scheme appdomotique \
+      -configuration Debug -destination "id=<UDID de l'iPhone>" \
+      -allowProvisioningUpdates build
+
+Le profil d'un compte Apple gratuit expire au bout de 7 jours ; il faut alors
+réinstaller par câble.
+
+
+DEPUIS UN SOUS-DOSSIER
+-----------------------
+
+    apps/api      npm run dev        (équivaut à `npm run api` à la racine)
+    apps/mobile   npm start          (équivaut à `npm run mobile`)
+
+
+AUTRES COMMANDES UTILES
+------------------------
+
+    npm run seed        recrée le jeu de démonstration
+                        ATTENTION : supprime le foyer du compte démo et le
+                        recrée. Tout ce qui y a été ajouté est perdu, et la
+                        base est partagée avec le serveur déployé.
+
+    npm run db:migrate  applique les migrations Prisma
+    npm run typecheck   vérifie les types des trois paquets
+    npm run test        lance les tests
+    npm run tuya:check  teste les centres de données Tuya et indique le bon
+
+
+EN CAS DE PROBLÈME
+-------------------
+
+« Le serveur est injoignable » dans l'application
+    Vérifier d'abord que Metro tourne, pas l'adresse IP :
+        curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8081/status
+    200 = Metro sert. Puis que l'API répond :
+        lsof -nP -iTCP:3000 -sTCP:LISTEN
+
+L'API semble tourner mais ne répond pas
+    Un superviseur `--watch` survit parfois à un crash de son serveur : le
+    terminal paraît occupé alors que plus rien n'écoute. Pour nettoyer :
+        pkill -f "tsx --watch src/main.ts"
+
+Une variable de apps/mobile/.env ne semble pas prise en compte
+    Les variables EXPO_PUBLIC_* sont inlinées au démarrage de Metro : il faut
+    le redémarrer, un simple « r » ne suffit pas.
+
+Le simulateur iOS refuse de lancer l'application
+    Les SDK Tuya ne fournissent pas de tranche arm64 pour le simulateur, donc
+    l'application se compile en x86_64 et exige Rosetta :
+        softwareupdate --install-rosetta --agree-to-license
+    Rester sur un simulateur iOS 18.6 : les runtimes iOS 26 sont arm64 seuls et
+    ne pourront jamais lancer ce build.

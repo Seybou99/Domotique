@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { AlertTriangle, Check, Eye, EyeOff, Wifi } from 'lucide-react-native';
 import { Button, Card, DeviceAvatar, ScreenHeader, StatusChip, Txt } from '../src/components';
@@ -10,40 +10,30 @@ import { font, fontSize, iconStroke, radius, space } from '../src/theme/tokens';
 import { useHome } from '../src/api/HomeProvider';
 import { useIntegrations } from '../src/api/hooks';
 import { useTuyaPairing } from '../src/api/useTuyaPairing';
+import type { DiscoveredDevice } from '../modules/tuya-pairing';
 
 /**
- * Appairage Wi-Fi d'un appareil, depuis l'application.
+ * Appairage d'un appareil connecté, depuis l'application.
  *
- * Troisième chemin d'ajout, à côté du Zigbee et du compte tiers : ici l'appareil
- * n'existe encore nulle part, et c'est le téléphone qui lui donne le réseau.
+ * **On cherche d'abord, on saisit ensuite.** Les appareils récents s'annoncent en
+ * Bluetooth tant qu'ils ne sont pas appairés : les découvrir avant toute saisie
+ * évite de taper un réseau à l'aveugle sans savoir si quelqu'un écoute en face.
+ * C'est ce que fait l'application du fabricant, et la raison pour laquelle elle
+ * aboutit là où une saisie préalable échouait sans rien expliquer.
  *
- * **Deux étapes avant de lancer**, et pas une seule. La préparation matérielle
- * (brancher, faire clignoter) et la saisie du réseau demandent deux gestes
- * différents, au deux moments différents : les réunir sur un écran fait qu'on
- * saisit son mot de passe pendant que l'appareil sort déjà de son mode
- * association, dont la fenêtre est courte.
- *
- * **Le mode AP impose de tout demander à l'avance.** Le téléphone quitte le
- * réseau du foyer pour rejoindre celui de l'appareil : une fois parti, plus
- * aucune requête ne sort. Identifiants du compte technique, jeton d'appairage,
- * foyer Tuya — `useTuyaPairing` récupère tout avant de basculer.
- *
- * L'écran ne pilote rien après l'appairage : il enchaîne sur l'import déjà
- * existant, qui fait entrer l'appareil dans le foyer côté serveur.
+ * Le réseau est demandé une fois l'appareil choisi, et l'appareil lui-même dit
+ * quels réseaux il capte : la liste ne contient donc que des choix qui peuvent
+ * marcher — un appareil qui ne voit pas le 5 GHz ne le proposera pas.
  *
  * **Les étapes sont des composants de module**, et non des fonctions internes.
  * Déclarées dans le composant, elles seraient recréées à chaque rendu : React y
- * verrait un nouveau type de composant, démonterait le sous-arbre et le
- * remonterait. Un champ de saisie perdrait le focus à chaque caractère — le
- * clavier se referme, et la frappe devient impossible.
+ * verrait un nouveau type, démonterait le sous-arbre et le remonterait. Un champ
+ * de saisie perdrait le focus à chaque caractère.
  */
 type Step = 'prepare' | 'network';
 
 /** D'où vient une valeur préremplie — le dire évite de la prendre pour une saisie oubliée. */
 type Prefill = 'none' | 'remembered' | 'detected';
-
-/** Le SDK laisse cette durée à l'appareil pour rejoindre le réseau puis le compte. */
-const TIMEOUT_S = 120;
 
 export default function DevicePairWifi() {
   const router = useRouter();
@@ -52,42 +42,43 @@ export default function DevicePairWifi() {
   const pairing = useTuyaPairing();
 
   const [step, setStep] = useState<Step>('prepare');
+  const [selected, setSelected] = useState<DiscoveredDevice | null>(null);
   const [ssid, setSsid] = useState('');
   const [password, setPassword] = useState('');
   const [revealed, setRevealed] = useState(false);
   const [prefill, setPrefill] = useState<Prefill>('none');
+  const [nearby, setNearby] = useState<string[]>([]);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+
   // Lue dans une promesse résolue plus tard : la valeur capturée par la fermeture
   // serait celle du rendu qui a lancé la détection.
   const ssidRef = useRef('');
   ssidRef.current = ssid;
-  const [helpOpen, setHelpOpen] = useState(false);
-  const [countdown, setCountdown] = useState(0);
-  const [importError, setImportError] = useState<string | null>(null);
-  const [importing, setImporting] = useState(false);
 
   // Capturé dans une constante : le narrowing d'une propriété d'objet ne survit
   // pas à une fermeture, et les gestionnaires ci-dessous en ont besoin.
-  const pairingState = pairing.state;
-  const searching = pairingState.step === 'searching' || pairingState.step === 'preparing';
+  const state = pairing.state;
 
   /**
    * Préremplissage du réseau, à l'entrée de l'étape — pas au montage de l'écran :
    * la demande d'autorisation de localisation qu'il peut déclencher n'a de sens
-   * qu'en regard d'un champ « nom du réseau », jamais devant les instructions de
-   * branchement.
+   * qu'en regard d'un champ « nom du réseau ».
    *
    * Le réseau retenu d'un appairage précédent passe avant celui que détecte le
-   * système : lui seul porte le mot de passe, et il a déjà fait ses preuves. La
-   * détection ne sert qu'au tout premier appareil.
-   *
-   * Une saisie déjà commencée n'est jamais écrasée : on revient ici après un
-   * échec, et perdre une correction manuelle rejouerait le même échec.
+   * système : lui seul porte le mot de passe, et il a déjà fait ses preuves.
    */
   useEffect(() => {
-    if (step !== 'network') return;
+    if (step !== 'network' || !selected) return;
     let cancelled = false;
 
     void (async () => {
+      // Ce que l'appareil capte, demandé en premier : la réponse met quelques
+      // secondes et la liste guide le choix mieux qu'un champ vide.
+      void pairing.networksNearDevice(selected.uuid).then((list) => {
+        if (!cancelled) setNearby(list);
+      });
+
       const remembered = await pairing.rememberedNetwork();
       if (cancelled || ssidRef.current.length > 0) return;
       if (remembered) {
@@ -106,22 +97,7 @@ export default function DevicePairWifi() {
     return () => {
       cancelled = true;
     };
-  }, [step, pairing.detectSsid, pairing.rememberedNetwork]);
-
-  // Le décompte suit la fenêtre du SDK : il ne la pilote pas, il la donne à voir.
-  // Sans lui, une recherche qui échoue ressemble à une application figée.
-  useEffect(() => {
-    if (!searching) return;
-    if (countdown <= 0) return;
-    const timer = setTimeout(() => setCountdown((value) => value - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [searching, countdown]);
-
-  async function launch() {
-    setImportError(null);
-    setCountdown(TIMEOUT_S);
-    await pairing.start(ssid.trim(), password);
-  }
+  }, [step, selected, pairing.detectSsid, pairing.rememberedNetwork, pairing.networksNearDevice]);
 
   /**
    * L'appareil appairé appartient au compte technique, dans le projet cloud du
@@ -155,13 +131,20 @@ export default function DevicePairWifi() {
   }
 
   function back() {
-    if (searching || pairingState.step === 'failed' || pairingState.step === 'found') {
+    if (state.step === 'failed' || state.step === 'found' || state.step === 'pairing') {
       pairing.reset();
-      setStep('network');
+      setStep('prepare');
+      setSelected(null);
       return;
     }
     if (step === 'network') {
       setStep('prepare');
+      setSelected(null);
+      pairing.reset();
+      return;
+    }
+    if (state.step === 'scanning') {
+      pairing.reset();
       return;
     }
     router.back();
@@ -169,7 +152,7 @@ export default function DevicePairWifi() {
 
   return (
     <Screen>
-      <ScreenHeader title="Appareil Wi-Fi" onBack={back} />
+      <ScreenHeader title="Appareil connecté" onBack={back} />
 
       {!pairing.isAvailable && (
         <Card tint="danger" style={{ gap: space.sm }}>
@@ -182,21 +165,30 @@ export default function DevicePairWifi() {
         </Card>
       )}
 
-      {pairingState.step === 'idle' && step === 'prepare' && (
-        <PrepareStep
-          helpOpen={helpOpen}
-          onToggleHelp={() => setHelpOpen((open) => !open)}
-          onReady={() => setStep('network')}
-          disabled={!pairing.isAvailable}
+      {state.step === 'idle' && step === 'prepare' && (
+        <PrepareStep onSearch={() => void pairing.scan()} disabled={!pairing.isAvailable} />
+      )}
+
+      {state.step === 'scanning' && (
+        <ScanningStep
+          devices={state.devices}
+          onPick={(device) => {
+            setSelected(device);
+            setStep('network');
+          }}
+          onRestart={() => void pairing.scan()}
         />
       )}
 
-      {pairingState.step === 'idle' && step === 'network' && (
+      {step === 'network' && selected && state.step !== 'pairing' && state.step !== 'found' && state.step !== 'failed' && (
         <NetworkStep
+          device={selected}
           ssid={ssid}
           password={password}
           revealed={revealed}
           prefill={prefill}
+          nearby={nearby}
+          busy={state.step === 'preparing'}
           onSsid={(value) => {
             setSsid(value);
             setPrefill('none');
@@ -206,36 +198,27 @@ export default function DevicePairWifi() {
             setPrefill('none');
           }}
           onReveal={() => setRevealed((shown) => !shown)}
-          onLaunch={launch}
-          disabled={!pairing.isAvailable}
+          onLaunch={() => void pairing.pair(selected, ssid.trim(), password)}
         />
       )}
 
-      {searching && (
-        <SearchingStep
-          progress={pairingState.step === 'searching' ? pairingState.progress : 'connecting'}
-          countdown={countdown}
-          onCancel={() => {
-            pairing.reset();
-            setStep('network');
-          }}
-        />
-      )}
+      {state.step === 'pairing' && <PairingStep progress={state.progress} />}
 
-      {pairingState.step === 'found' && (
+      {state.step === 'found' && (
         <FoundStep
-          device={pairingState.device}
+          device={state.device}
           importing={importing}
           error={importError}
-          onAdd={() => addToHome(pairingState.device.deviceId)}
+          onAdd={() => addToHome(state.device.deviceId)}
         />
       )}
 
-      {pairingState.step === 'failed' && (
+      {state.step === 'failed' && (
         <FailedStep
-          message={pairingState.message}
+          message={state.message}
           onRetry={() => {
             pairing.reset();
+            setSelected(null);
             setStep('prepare');
           }}
           onGiveUp={() => router.back()}
@@ -247,17 +230,7 @@ export default function DevicePairWifi() {
 
 // ───────────────────────────────────────────────────────────── étape 1 : préparer
 
-function PrepareStep({
-  helpOpen,
-  onToggleHelp,
-  onReady,
-  disabled,
-}: {
-  helpOpen: boolean;
-  onToggleHelp: () => void;
-  onReady: () => void;
-  disabled?: boolean;
-}) {
+function PrepareStep({ onSearch, disabled }: { onSearch: () => void; disabled?: boolean }) {
   const t = useTheme();
 
   return (
@@ -266,7 +239,7 @@ function PrepareStep({
         <DeviceAvatar icon={deviceIcons.plug} size={72} tone="network" />
         <Txt variant="card">Préparez l’appareil</Txt>
         <Txt variant="caption" tone="secondary" style={{ textAlign: 'center' }}>
-          Trois gestes, dans cet ordre. L’appareil doit clignoter avant de continuer.
+          Deux gestes, puis l’application le trouvera toute seule.
         </Txt>
       </Card>
 
@@ -275,10 +248,6 @@ function PrepareStep({
         <Instruction
           index={2}
           text="Maintenez son bouton environ 5 secondes, jusqu’à ce que le voyant clignote rapidement."
-        />
-        <Instruction
-          index={3}
-          text="Restez près de l’appareil et de votre box pendant toute l’opération."
         />
       </Card>
 
@@ -295,55 +264,107 @@ function PrepareStep({
         </View>
       </Card>
 
-      <View style={{ gap: space.sm }}>
-        <Button label="Le voyant clignote" full disabled={disabled} onPress={onReady} />
-        <Button
-          label={helpOpen ? 'Masquer l’aide' : 'Le voyant ne clignote pas ?'}
-          variant="ghost"
-          full
-          onPress={onToggleHelp}
-        />
-      </View>
+      <Card style={{ flexDirection: 'row', gap: space.md }}>
+        <AlertTriangle size={20} color={t.textSecondary} strokeWidth={iconStroke} />
+        <Txt variant="caption" tone="secondary" style={{ flex: 1 }}>
+          Le Bluetooth doit être activé : c’est par lui que l’appareil se signale, avant même d’avoir
+          un réseau.
+        </Txt>
+      </Card>
 
-      {helpOpen && (
+      <Button label="Rechercher les appareils" full disabled={disabled} onPress={onSearch} />
+    </View>
+  );
+}
+
+// ──────────────────────────────────────────────────────────── étape 2 : recherche
+
+function ScanningStep({
+  devices,
+  onPick,
+  onRestart,
+}: {
+  devices: DiscoveredDevice[];
+  onPick: (device: DiscoveredDevice) => void;
+  onRestart: () => void;
+}) {
+  const t = useTheme();
+
+  return (
+    <View style={{ gap: space.md }}>
+      <Card style={{ gap: space.md, alignItems: 'center', paddingVertical: space.xl }}>
+        <ActivityIndicator color={t.network} />
+        <Txt variant="card">Recherche en cours</Txt>
+        <Txt variant="caption" tone="secondary" style={{ textAlign: 'center' }}>
+          Restez près de l’appareil. Il apparaîtra dès qu’il se sera signalé.
+        </Txt>
+      </Card>
+
+      {devices.length === 0 ? (
         <Card style={{ gap: space.sm }}>
           <Txt variant="caption" tone="secondary">
-            Le geste change selon les appareils. Sur la plupart des prises et ampoules, une pression
-            longue de 5 secondes suffit ; certaines demandent d’éteindre puis rallumer trois fois de
-            suite.
+            Aucun appareil pour l’instant. Vérifiez que le voyant clignote rapidement — sans quoi
+            l’appareil n’émet rien. Au besoin, refaites la manipulation du bouton.
           </Txt>
-          <Txt variant="caption" tone="secondary">
-            Un clignotement <Txt variant="caption">lent</Txt> signifie que l’appareil attend un autre
-            mode d’appairage. Refaites la manipulation jusqu’à obtenir un clignotement rapide.
-          </Txt>
+          <Button label="Relancer la recherche" variant="secondary" full onPress={onRestart} />
         </Card>
+      ) : (
+        <View style={{ gap: space.sm }}>
+          <Txt variant="card">
+            {devices.length} appareil{devices.length > 1 ? 's' : ''} trouvé
+            {devices.length > 1 ? 's' : ''}
+          </Txt>
+          {devices.map((device) => (
+            <Card
+              key={device.uuid}
+              onPress={() => onPick(device)}
+              accessibilityLabel={`Appairer l’appareil ${device.mac}`}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}
+            >
+              <DeviceAvatar icon={deviceIcons.plug} size={44} active tone="network" />
+              <View style={{ flex: 1 }}>
+                <Txt variant="bodyStrong">Appareil à appairer</Txt>
+                <Txt variant="dataMicro" tone="secondary" numberOfLines={1}>
+                  {device.mac || device.uuid}
+                </Txt>
+              </View>
+              <Txt variant="micro" tone="energy">
+                Choisir
+              </Txt>
+            </Card>
+          ))}
+        </View>
       )}
     </View>
   );
 }
 
-// ─────────────────────────────────────────────────────────────── étape 2 : réseau
+// ─────────────────────────────────────────────────────────────── étape 3 : réseau
 
 function NetworkStep({
+  device,
   ssid,
   password,
   revealed,
   prefill,
+  nearby,
+  busy,
   onSsid,
   onPassword,
   onReveal,
   onLaunch,
-  disabled,
 }: {
+  device: DiscoveredDevice;
   ssid: string;
   password: string;
   revealed: boolean;
   prefill: Prefill;
+  nearby: string[];
+  busy: boolean;
   onSsid: (value: string) => void;
   onPassword: (value: string) => void;
   onReveal: () => void;
   onLaunch: () => void;
-  disabled?: boolean;
 }) {
   const t = useTheme();
   const field = fieldStyle(t);
@@ -354,9 +375,51 @@ function NetworkStep({
         <Txt variant="card">Votre réseau Wi-Fi</Txt>
         <Txt variant="caption" tone="secondary">
           L’appareil a besoin de ces identifiants pour rejoindre votre réseau. Ils lui sont transmis
-          directement, sans passer par nos serveurs.
+          par Bluetooth, sans passer par nos serveurs.
         </Txt>
+        {!device.supports5G && (
+          <Txt variant="micro" tone="network">
+            Cet appareil ne capte que le 2,4 GHz.
+          </Txt>
+        )}
       </Card>
+
+      {/* Les réseaux que l'appareil capte lui-même : un choix dans cette liste ne
+          peut pas être une faute de frappe, ni un réseau hors de portée. */}
+      {nearby.length > 0 && (
+        <Card style={{ gap: space.sm }}>
+          <Txt variant="micro" tone="secondary">
+            Réseaux vus par l’appareil
+          </Txt>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+            {nearby.map((name) => {
+              const active = ssid === name;
+              return (
+                <Pressable
+                  key={name}
+                  onPress={() => onSsid(name)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  style={{
+                    height: 36,
+                    paddingHorizontal: space.md - 4,
+                    borderRadius: radius.pill,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderWidth: 1,
+                    borderColor: active ? t.energyRing : t.lineStrong,
+                    backgroundColor: active ? t.energySoft : 'transparent',
+                  }}
+                >
+                  <Txt variant="micro" tone={active ? 'energy' : 'secondary'}>
+                    {name}
+                  </Txt>
+                </Pressable>
+              );
+            })}
+          </View>
+        </Card>
+      )}
 
       <Card style={{ gap: space.md }}>
         <View style={{ gap: space.sm }}>
@@ -426,47 +489,42 @@ function NetworkStep({
         )}
       </Card>
 
-      <Card style={{ flexDirection: 'row', gap: space.md }}>
-        <AlertTriangle size={20} color={t.textSecondary} strokeWidth={iconStroke} />
-        <Txt variant="caption" tone="secondary" style={{ flex: 1 }}>
-          Pendant l’appairage, le téléphone rejoint brièvement le réseau de l’appareil : les autres
-          applications n’auront pas de connexion pendant une minute environ.
-        </Txt>
-      </Card>
-
       <Button
         label="Lancer l’appairage"
         full
-        disabled={disabled || ssid.trim().length === 0}
+        loading={busy}
+        disabled={ssid.trim().length === 0}
         onPress={onLaunch}
       />
     </View>
   );
 }
 
-// ──────────────────────────────────────────────────────────── étape 3 : recherche
+// ──────────────────────────────────────────────────────────── étape 4 : appairage
 
-function SearchingStep({
-  progress,
-  countdown,
-  onCancel,
-}: {
-  progress: 'connecting' | 'binding';
-  countdown: number;
-  onCancel: () => void;
-}) {
+function PairingStep({ progress }: { progress: 'connecting' | 'binding' }) {
+  // Un décompte plutôt qu'une attente muette : sans lui, une association qui
+  // traîne ne se distingue pas d'une application figée.
+  const [remaining, setRemaining] = useState(135);
+
+  useEffect(() => {
+    if (remaining <= 0) return;
+    const timer = setTimeout(() => setRemaining((value) => value - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [remaining]);
+
   return (
     <View style={{ gap: space.md }}>
       <Card style={{ gap: space.md, alignItems: 'center', paddingVertical: space.xl }}>
         <DeviceAvatar icon={deviceIcons.plug} size={72} active tone="network" />
         <Txt variant="card">Appairage en cours</Txt>
-        <Txt variant="section" tone={countdown > 20 ? 'network' : 'danger'} tight>
-          {countdown} s
+        <Txt variant="section" tone={remaining > 20 ? 'network' : 'danger'} tight>
+          {remaining} s
         </Txt>
       </Card>
 
-      {/* Deux étapes nommées plutôt qu'un compte à rebours seul : quand ça
-          échoue, savoir laquelle des deux a bloqué oriente la correction. */}
+      {/* Deux étapes nommées plutôt qu'une attente muette : quand ça échoue,
+          savoir laquelle des deux a bloqué oriente la correction. */}
       <Card style={{ gap: space.md }}>
         <Phase
           label="L’appareil rejoint votre Wi-Fi"
@@ -477,15 +535,13 @@ function SearchingStep({
       </Card>
 
       <Txt variant="caption" tone="muted" style={{ textAlign: 'center' }}>
-        Laissez l’application ouverte et l’écran allumé.
+        Laissez l’application ouverte et restez près de l’appareil.
       </Txt>
-
-      <Button label="Annuler" variant="ghost" full onPress={onCancel} />
     </View>
   );
 }
 
-// ───────────────────────────────────────────────────────────── étape 4 : trouvé
+// ───────────────────────────────────────────────────────────── étape 5 : trouvé
 
 function FoundStep({
   device,
@@ -533,7 +589,7 @@ function FoundStep({
   );
 }
 
-// ───────────────────────────────────────────────────────────── étape 5 : échec
+// ───────────────────────────────────────────────────────────── étape 6 : échec
 
 function FailedStep({
   message,
@@ -559,11 +615,8 @@ function FailedStep({
         <Txt variant="bodyStrong">Ce qu’il faut vérifier</Txt>
         <Instruction index={1} text="Le réseau choisi est bien en 2,4 GHz, pas en 5 GHz." />
         <Instruction index={2} text="Le mot de passe du Wi-Fi est exact — casse comprise." />
-        <Instruction
-          index={3}
-          text="Le voyant clignotait rapidement au moment de lancer l’appairage."
-        />
-        <Instruction index={4} text="L’appareil et la box sont assez proches l’un de l’autre." />
+        <Instruction index={3} text="Le Bluetooth du téléphone est actif, et l’appareil est proche." />
+        <Instruction index={4} text="Le voyant clignotait rapidement au moment du lancement." />
       </Card>
 
       <View style={{ gap: space.sm }}>

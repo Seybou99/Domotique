@@ -54,6 +54,14 @@ const withTuyaInfoPlist = (config, keys) =>
     cfg.modResults.NSBonjourServices = ['_tuya._tcp', '_http._tcp'];
     cfg.modResults.NSLocationWhenInUseUsageDescription =
       'iOS demande cette autorisation pour lire le nom du réseau Wi-Fi auquel vous êtes connecté.';
+
+    /**
+     * Les appareils récents annoncent leur présence en Bluetooth tant qu'ils ne
+     * sont pas appairés, et reçoivent les identifiants Wi-Fi par ce canal. Sans
+     * cette clé, iOS interrompt l'application au premier scan.
+     */
+    cfg.modResults.NSBluetoothAlwaysUsageDescription =
+      'Nécessaire pour détecter les appareils connectés à proximité et leur transmettre votre réseau Wi-Fi.';
     return cfg;
   });
 

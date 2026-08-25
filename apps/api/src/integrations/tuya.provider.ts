@@ -1,6 +1,6 @@
 import type { Protocol } from '@domotique/contract';
 import { TuyaClient } from '../devices/tuya/client.js';
-import { dpToCapability } from '../devices/tuya/mapping.js';
+import { dpToCapability, type DpSpec } from '../devices/tuya/mapping.js';
 import { AppError } from '../http/errors.js';
 import type { ProviderDevice, ProviderTokens, ThirdPartyProvider } from './provider.js';
 
@@ -85,23 +85,89 @@ export class TuyaProvider implements ThirdPartyProvider {
   }
 
   /**
-   * Appareils des comptes Smart Life associés au projet.
+   * Échelles et bornes déclarées par l'appareil lui-même.
+   *
+   * Sans elles, le mapping retombe sur des valeurs typiques — et un modèle qui
+   * s'en écarte donne un relevé faux sans que rien ne le signale : une
+   * consommation dix fois trop grande reste plausible. La fiche de l'appareil
+   * est la seule source qui ne se trompe pas.
+   *
+   * Un échec est sans gravité : les défauts prennent le relais, et un appareil
+   * dont la fiche est illisible vaut mieux qu'un import qui échoue en entier.
+   */
+  private async specifications(deviceId: string): Promise<Record<string, DpSpec>> {
+    try {
+      const spec = await this.client.request<{
+        functions?: { code: string; values: string }[];
+        status?: { code: string; values: string }[];
+      }>('GET', `/v1.0/devices/${encodeURIComponent(deviceId)}/specifications`);
+
+      const parsed: Record<string, DpSpec> = {};
+      for (const entry of [...(spec.functions ?? []), ...(spec.status ?? [])]) {
+        try {
+          const values = JSON.parse(entry.values) as Partial<DpSpec>;
+          // Les Data Points booléens ou énumérés n'ont pas de bornes : les
+          // retenir écraserait les défauts avec des valeurs vides.
+          if (typeof values.min === 'number' && typeof values.max === 'number') {
+            parsed[entry.code] = values as DpSpec;
+          }
+        } catch {
+          continue;
+        }
+      }
+      return parsed;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Appareils rattachés au projet.
    *
    * `accessToken` est ignoré : en mode console, il n'y a pas de jeton
    * utilisateur. On interroge avec les identifiants du projet, ce que fait le
    * client quand on ne lui passe rien.
+   *
+   * **Deux origines, deux routes.** Les appareils appairés depuis un compte
+   * Smart Life existant arrivent par `associated-users`. Ceux appairés par
+   * l'application elle-même appartiennent au compte technique du SDK, et
+   * `associated-users` ne les voit pas — il faut les demander compte par compte.
+   * Vérifié en conditions réelles : une prise visible dans la console, en ligne
+   * et liée au projet, restait introuvable par la première route.
    */
-  async listDevices(): Promise<ProviderDevice[]> {
-    const { devices } = await this.client.request<{
-      devices: { id: string; name: string; category: string; status: { code: string; value: unknown }[] }[];
-    }>('GET', '/v1.0/iot-01/associated-users/devices?size=100');
 
-    return devices.map((device) => {
+  async listDevices(_accessToken: string | null, uids: string[] = []): Promise<ProviderDevice[]> {
+    const collected = new Map<string, RawTuyaDevice>();
+
+    const { devices } = await this.client.request<{ devices: RawTuyaDevice[] }>(
+      'GET',
+      '/v1.0/iot-01/associated-users/devices?size=100',
+    );
+    for (const device of devices) collected.set(device.id, device);
+
+    for (const uid of uids) {
+      // L'échec d'un compte ne doit pas priver des appareils des autres : un uid
+      // périmé est une anomalie locale, pas une panne du connecteur.
+      try {
+        const owned = await this.client.request<RawTuyaDevice[]>(
+          'GET',
+          `/v1.0/users/${encodeURIComponent(uid)}/devices`,
+        );
+        for (const device of owned ?? []) collected.set(device.id, device);
+      } catch {
+        continue;
+      }
+    }
+
+    const list = [...collected.values()];
+    const specs = await Promise.all(list.map((device) => this.specifications(device.id)));
+
+    return list.map((device, index) => {
       // Une capacité n'est retenue que si le mapping sait la traduire : mieux
       // vaut importer un appareil partiellement pilotable que d'exposer des
       // Data Points bruts que l'application ne saurait pas afficher.
       const capabilities = (device.status ?? [])
-        .map((dp) => dpToCapability(dp.code, dp.value))
+        .map((dp) => dpToCapability(dp.code, dp.value, specs[index]))
         .filter((value): value is NonNullable<typeof value> => value !== null)
         .map((value) => ({ type: value.type, writable: isWritable(value.type) }));
 
@@ -115,6 +181,14 @@ export class TuyaProvider implements ThirdPartyProvider {
     });
   }
 }
+
+/** Appareil tel que le renvoient les deux routes de listing. */
+type RawTuyaDevice = {
+  id: string;
+  name: string;
+  category: string;
+  status: { code: string; value: unknown }[];
+};
 
 const WRITABLE = new Set(['on_off', 'brightness', 'color_temp', 'color_hs', 'position', 'target_temperature']);
 const isWritable = (type: string) => WRITABLE.has(type);

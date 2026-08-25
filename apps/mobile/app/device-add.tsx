@@ -181,8 +181,8 @@ export default function DeviceAdd() {
           />
           <SourceCard
             icon={<Wifi size={24} color={t.network} strokeWidth={iconStroke} />}
-            title="Appareil Wi-Fi"
-            description="Prise, ampoule ou capteur neuf — l’appairer directement depuis ici"
+            title="Appareil connecté"
+            description="Prise, ampoule ou capteur neuf — le trouver et l’appairer depuis ici"
             onPress={() => router.push('/device-pair-wifi')}
           />
           <SourceCard

@@ -55,7 +55,12 @@ export interface ThirdPartyProvider {
    * `accessToken` est `null` en mode `console` : le fournisseur utilise alors
    * les identifiants du projet.
    */
-  listDevices(accessToken: string | null): Promise<ProviderDevice[]>;
+  /**
+   * @param uids Comptes techniques du SDK natif à interroger en plus du compte
+   *   lié. Les appareils appairés depuis l'application leur appartiennent, et
+   *   n'apparaissent pas dans la liste du projet.
+   */
+  listDevices(accessToken: string | null, uids?: string[]): Promise<ProviderDevice[]>;
 }
 
 export class ProviderRegistry {

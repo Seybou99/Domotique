@@ -233,13 +233,29 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: Ctx) {
     return { account: toAccount(account) };
   });
 
+
+  /**
+   * Comptes techniques du SDK natif, pour ce foyer et ce fournisseur.
+   *
+   * Les appareils appairés depuis l'application leur appartiennent : ils sont
+   * invisibles de la liste du projet, et il faut les réclamer compte par compte.
+   */
+  async function sdkAccountUids(homeId: string, provider: Protocol): Promise<string[]> {
+    const accounts = await prisma.nativeSdkAccount.findMany({
+      where: { provider, user: { memberships: { some: { homeId } } } },
+      select: { uid: true },
+    });
+    return accounts.map((account) => account.uid);
+  }
+
   registerRoute(app, ctx, integrationsApi.discover, async ({ userId, params }) => {
     const account = await prisma.thirdPartyAccount.findUnique({ where: { id: params.account_id } });
     if (!account) throw notFound('Compte tiers introuvable');
     await access.requireHome(userId!, account.homeId, 'member');
 
     const token = await accounts.accessToken(params.account_id);
-    const remote = await requireProvider(account.provider).listDevices(token);
+    const uids = await sdkAccountUids(account.homeId, account.provider);
+    const remote = await requireProvider(account.provider).listDevices(token, uids);
 
     const imported = await prisma.device.findMany({
       where: { accountId: account.id },
@@ -264,7 +280,8 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: Ctx) {
     await access.requireHome(userId!, account.homeId, 'member');
 
     const token = await accounts.accessToken(params.account_id);
-    const remote = await requireProvider(account.provider).listDevices(token);
+    const uids = await sdkAccountUids(account.homeId, account.provider);
+    const remote = await requireProvider(account.provider).listDevices(token, uids);
     const byId = new Map(remote.map((d) => [d.externalId, d]));
 
     const created = [];

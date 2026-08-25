@@ -34,12 +34,19 @@ const DP_TO_CAPABILITY: Record<string, CapabilityValue['type']> = {
   battery_percentage: 'battery',
   cur_power: 'power',
   add_ele: 'energy',
+  // Deux générations coexistent chez Tuya : `colour_data_v2` porte un objet
+  // {h,s,v}, `colour_data` une chaîne hexadécimale. Les ampoules récentes
+  // exposent souvent les deux ; la v2 est lue en priorité par l'ordre de ce
+  // tableau, la v1 sert aux modèles anciens.
+  colour_data_v2: 'color_hs',
+  colour_data: 'color_hs',
 };
 
 const CAPABILITY_TO_DP: Partial<Record<CapabilityValue['type'], string>> = {
   on_off: 'switch_led',
   brightness: 'bright_value_v2',
   color_temp: 'temp_value_v2',
+  color_hs: 'colour_data_v2',
   position: 'percent_control',
   target_temperature: 'temp_set',
 };
@@ -52,13 +59,56 @@ const DEFAULT_SPEC: Record<string, DpSpec> = {
   // Tuya renvoie souvent des entiers mis à l'échelle : 235 avec scale 1 = 23,5 °C.
   temp_set: { min: 5, max: 35, scale: 0 },
   cur_power: { min: 0, max: 50000, scale: 1 },
-  add_ele: { min: 0, max: 99999999, scale: 2 },
+  // Échelle 3, relevée sur la fiche de l'appareil : la prise LSC déclare
+  // `{"min":0,"max":50000,"scale":3,"step":100}`. Avec 2, une consommation
+  // s'affichait dix fois trop grande — et rien ne l'aurait signalé, la valeur
+  // restant plausible. Les modèles qui s'en écartent sont couverts par les
+  // spécifications lues sur l'appareil, qui priment sur ce défaut.
+  add_ele: { min: 0, max: 50000, scale: 3 },
   va_temperature: { min: -200, max: 600, scale: 1 },
   va_humidity: { min: 0, max: 100 },
 };
 
 /** Bornes de température de couleur en kelvins, côté contrat. */
 const KELVIN = { min: 2700, max: 6500 } as const;
+
+/**
+ * Couleur Tuya → teinte et saturation du contrat.
+ *
+ * Deux encodages selon la génération de l'ampoule, et l'appareil ne dit pas
+ * lequel il emploie : un objet `{h, s, v}`, ou une chaîne hexadécimale de douze
+ * caractères où chaque grandeur tient sur quatre. La saturation vaut 0-1000 chez
+ * Tuya, 0-100 dans le contrat.
+ *
+ * La valeur (`v`) est ignorée : c'est la luminosité, que le contrat porte
+ * séparément dans `brightness`.
+ */
+function parseColour(value: unknown): { h: number; s: number } | null {
+  const clamp = (n: number, max: number) => Math.min(max, Math.max(0, Math.round(n)));
+
+  if (typeof value === 'object' && value !== null) {
+    const { h, s } = value as { h?: unknown; s?: unknown };
+    if (typeof h === 'number' && typeof s === 'number') {
+      return { h: clamp(h, 360), s: clamp(s / 10, 100) };
+    }
+    return null;
+  }
+
+  if (typeof value !== 'string' || value.length < 12) return null;
+  // Certaines ampoules renvoient l'objet sous forme de chaîne JSON.
+  if (value.trim().startsWith('{')) {
+    try {
+      return parseColour(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+
+  const h = Number.parseInt(value.slice(0, 4), 16);
+  const s = Number.parseInt(value.slice(4, 8), 16);
+  if (Number.isNaN(h) || Number.isNaN(s)) return null;
+  return { h: clamp(h, 360), s: clamp(s / 10, 100) };
+}
 
 function applyScale(raw: number, spec: DpSpec | undefined): number {
   return spec?.scale ? raw / 10 ** spec.scale : raw;
@@ -110,6 +160,10 @@ export function dpToCapability(
       const ratio = toPercent(value, spec) / 100;
       return { type: 'color_temp', value: Math.round(KELVIN.min + ratio * (KELVIN.max - KELVIN.min)) };
     }
+    case 'color_hs': {
+      const colour = parseColour(value);
+      return colour ? { type: 'color_hs', value: { h: colour.h, s: colour.s } } : null;
+    }
     case 'target_temperature':
     case 'temperature':
     case 'humidity':
@@ -144,6 +198,27 @@ export function capabilityToDp(
     }
     case 'target_temperature':
       return { code, value: removeScale(target.value, spec) };
+    /**
+     * La valeur envoyée est maximale, faute de connaître celle en cours.
+     *
+     * Chez Tuya, la luminosité d'une ampoule en mode couleur est portée par le
+     * `v` de ce même Data Point, et non par `bright_value` : envoyer une teinte
+     * impose donc d'envoyer aussi une luminosité. Reprendre celle du moment
+     * demanderait l'état courant, dont cette fonction ne dispose pas — elle
+     * traduit une valeur, elle ne lit pas l'appareil. Choisir 1000 allume à
+     * pleine puissance ; c'est visible, donc corrigible d'un geste, là qu'une
+     * valeur basse arbitraire donnerait une ampoule qui s'éteint presque en
+     * changeant de couleur.
+     */
+    case 'color_hs':
+      return {
+        code,
+        value: {
+          h: Math.round(target.value.h),
+          s: Math.round(target.value.s * 10),
+          v: 1000,
+        },
+      };
     default:
       return null;
   }

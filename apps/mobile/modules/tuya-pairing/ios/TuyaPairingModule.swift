@@ -1,46 +1,89 @@
 import ExpoModulesCore
 import ThingSmartHomeKit
+import ThingSmartBLEKit
+import ThingSmartBLECoreKit
 import NetworkExtension
 import CoreLocation
 
 /**
- Appairage Wi-Fi Tuya (iOS).
+ Appairage Tuya (iOS).
 
- Le SDK s'initialise dans `AppDelegate` via le plugin de configuration : il doit
- l'être avant toute autre API Tuya, et le faire depuis JavaScript arriverait
- trop tard sur certains chemins de démarrage.
+ **Bluetooth d'abord, et non le mode AP.** Les appareils Tuya récents — la prise
+ LSC en est une — sont bimodes : ils annoncent leur présence en Bluetooth tant
+ qu'ils ne sont pas appairés, et reçoivent les identifiants Wi-Fi par ce canal.
+ L'application les découvre donc *avant* toute saisie, là où le mode AP obligeait
+ à taper un réseau à l'aveugle en espérant que l'appareil écoutait. C'est le
+ parcours de l'application du fabricant, et c'est celui que le matériel attend.
 
- Mode **AP** plutôt que EZ : l'appareil expose son propre point d'accès et le
- téléphone lui transmet les identifiants Wi-Fi. Le mode EZ diffuse en multicast,
- ce que de plus en plus de routeurs bloquent — le taux d'échec est nettement
- plus élevé, pour un gain de deux ou trois manipulations.
+ Le mode AP reste le seul recours pour un appareil Wi-Fi sans Bluetooth ; il n'est
+ pas exposé ici tant qu'aucun appareil du foyer n'en a besoin — le garder sans
+ pouvoir le tester en ferait du code mort qui pourrit.
+
+ Le pilotage n'est toujours pas du ressort du SDK : une fois appairé, l'appareil
+ est visible du projet cloud et c'est le backend qui le commande. Sans quoi un
+ scénario programmé à 23:30 ne partirait pas téléphone éteint.
  */
+
 /**
- Relais du delegate d'appairage.
+ Relais des delegates Objective-C.
 
- `ThingSmartActivatorDelegate` est un protocole Objective-C : il exige un
- `NSObject`. Or un `Module` Expo n'en est pas un — d'où cet objet intermédiaire,
- qui se contente de transmettre les callbacks au module sous forme de fermeture.
+ `ThingSmartBLEManagerDelegate` et `ThingSmartBLEWifiActivatorDelegate` exigent un
+ `NSObject` ; un `Module` Expo n'en est pas un. Cet objet intermédiaire transmet
+ chaque rappel sous forme de fermeture.
  */
-private final class ActivatorRelay: NSObject, ThingSmartActivatorDelegate {
-  private let onResult: (ThingSmartDeviceModel?, Error?) -> Void
+private final class BLERelay: NSObject, ThingSmartBLEManagerDelegate, ThingSmartBLEWifiActivatorDelegate {
+  var onDiscovered: ((ThingBLEAdvModel) -> Void)?
+  var onPaired: ((ThingSmartDeviceModel?, Error?) -> Void)?
+  var onWifiList: (([Any], String, Error?) -> Void)?
+  var onBluetoothState: ((Bool) -> Void)?
+  /// Trace destinée au terminal Metro : le SDK échoue souvent sans rien dire, et
+  /// distinguer « pas de réponse » de « refus » demande de voir ses rappels.
+  var onTrace: ((String) -> Void)?
 
-  init(onResult: @escaping (ThingSmartDeviceModel?, Error?) -> Void) {
-    self.onResult = onResult
+  /**
+   L'appareil n'est plus en mode configuration réseau.
+
+   Rappel optionnel du protocole, et la seule façon d'apprendre que l'appareil a
+   quitté sa fenêtre d'association — sans lui, l'appairage semble se perdre.
+   */
+  func bleWifiActivator(_ activator: ThingSmartBLEWifiActivator, notConfigStateWithError error: Error) {
+    onTrace?("notConfigState : \(error.localizedDescription)")
   }
 
-  func activator(
-    _ activator: ThingSmartActivator,
-    didReceiveDevice deviceModel: ThingSmartDeviceModel?,
-    error: (any Error)?
+  func didDiscoveryDevice(withDeviceInfo deviceInfo: ThingBLEAdvModel) {
+    onDiscovered?(deviceInfo)
+  }
+
+  func bluetoothDidUpdateState(_ isPoweredOn: Bool) {
+    onBluetoothState?(isPoweredOn)
+  }
+
+  func bleWifiActivator(
+    _ activator: ThingSmartBLEWifiActivator,
+    didReceiveBLEWifiConfigDevice deviceModel: ThingSmartDeviceModel?,
+    error: Error?
   ) {
-    onResult(deviceModel, error)
+    onTrace?(
+      "didReceiveBLEWifiConfigDevice : device=\(deviceModel?.devId ?? "nil") error=\(error?.localizedDescription ?? "nil")"
+    )
+    onPaired?(deviceModel, error)
+  }
+
+  // `error` n'est pas optionnel dans le protocole Objective-C, contrairement à ce
+  // que suggère son usage : le SDK passe une erreur vide plutôt que `nil`.
+  func bleWifiActivator(
+    _ activator: ThingSmartBLEWifiActivator,
+    didScanWifiList wifiList: [Any],
+    uuid: String,
+    error: Error
+  ) {
+    onWifiList?(wifiList, uuid, error)
   }
 }
 
 /**
  Autorisation de localisation, demandée pour une seule raison : lire le nom du
- réseau Wi-Fi.
+ réseau Wi-Fi courant.
 
  iOS ne rend le SSID lisible qu'à trois conditions réunies — l'entitlement
  *Access WiFi Information*, l'autorisation de localisation accordée, et le
@@ -94,15 +137,32 @@ private final class LocationGate: NSObject, CLLocationManagerDelegate {
 }
 
 public class TuyaPairingModule: Module {
-  private var activator: ThingSmartActivator?
-  private var relay: ActivatorRelay?
   private var currentHomeId: Int64 = 0
   private let locationGate = LocationGate()
+  private let relay = BLERelay()
+
+  /**
+   Un seul activateur, pour toute la durée de l'écran.
+
+   `connectAndQueryWifiList` ouvre une connexion Bluetooth avec l'appareil et la
+   conserve sur l'objet. En créer un second pour lancer l'appairage jetait cette
+   session : la configuration partait sans elle, le rappel de succès ne signifiait
+   plus rien, et le résultat n'arrivait jamais — le SDK répondait à un objet
+   déjà libéré.
+   */
+  private lazy var activator: ThingSmartBLEWifiActivator = {
+    let created = ThingSmartBLEWifiActivator()
+    created.bleWifiDelegate = self.relay
+    return created
+  }()
+  /// Les appareils déjà signalés, pour ne pas republier la même annonce en boucle :
+  /// une balise Bluetooth émet plusieurs fois par seconde.
+  private var seen: Set<String> = []
 
   public func definition() -> ModuleDefinition {
     Name("TuyaPairingModule")
 
-    Events("onDeviceFound", "onPairingError", "onPairingProgress")
+    Events("onDeviceDiscovered", "onDeviceFound", "onPairingError", "onPairingProgress", "onTrace")
 
     /**
      Initialisation du SDK, au plus tôt.
@@ -124,6 +184,31 @@ public class TuyaPairingModule: Module {
         return
       }
       ThingSmartSDK.sharedInstance().start(withAppKey: key, secretKey: secret)
+
+      // Les journaux internes du SDK, en développement seulement : lui seul sait
+      // dire pourquoi une association n'aboutit pas, et il ne le rapporte par
+      // aucun rappel. Visibles dans la console Xcode.
+      #if DEBUG
+        ThingSmartSDK.sharedInstance().debugMode = true
+      #endif
+
+      self.relay.onTrace = { [weak self] message in
+        NSLog("[TuyaPairing] \(message)")
+        self?.sendEvent("onTrace", ["message": message])
+      }
+
+      self.relay.onDiscovered = { [weak self] device in
+        guard let self, let uuid = device.uuid, !self.seen.contains(uuid) else { return }
+        self.seen.insert(uuid)
+        self.sendEvent("onDeviceDiscovered", [
+          "uuid": uuid,
+          "productId": device.productId ?? "",
+          "mac": device.mac ?? "",
+          // Un appareil qui ne capte pas le 5 GHz : l'écran peut prévenir avant
+          // que l'utilisateur ne choisisse un réseau que l'appareil ignorera.
+          "supports5G": device.isSupport5G,
+        ])
+      }
     }
 
     /**
@@ -158,7 +243,8 @@ public class TuyaPairingModule: Module {
         password: password,
         createHome: false,
         success: { _ in
-          promise.resolve(["uid": ThingSmartUser.sharedInstance().uid ?? uid])
+          self.relay.onTrace?("signIn : ok — uid=\(ThingSmartUser.sharedInstance().uid)")
+          promise.resolve(["uid": ThingSmartUser.sharedInstance().uid])
         },
         failure: { error in
           promise.reject("TUYA_SIGNIN_FAILED", error?.localizedDescription ?? "Connexion Tuya impossible")
@@ -170,6 +256,7 @@ public class TuyaPairingModule: Module {
       ThingSmartHomeManager().getHomeList(success: { homes in
         if let existing = homes?.first {
           self.currentHomeId = existing.homeId
+          self.relay.onTrace?("ensureHome : foyer existant homeId=\(existing.homeId)")
           promise.resolve(["homeId": existing.homeId])
           return
         }
@@ -194,25 +281,92 @@ public class TuyaPairingModule: Module {
       })
     }
 
-    AsyncFunction("startPairing") { (ssid: String, password: String, homeId: Int, timeoutS: Int, promise: Promise) in
-      let home = Int64(homeId)
-      self.currentHomeId = home
+    /**
+     Écoute des appareils non appairés à proximité.
 
-      // Le jeton d'appairage est valable quelques minutes et lie l'appareil au
-      // foyer Tuya : sans lui, l'appareil rejoindrait le Wi-Fi sans être rattaché.
-      ThingSmartActivator.sharedInstance()?.getTokenWithHomeId(home, success: { token in
-        guard let token else {
-          promise.reject("TUYA_TOKEN_FAILED", "Jeton d’appairage vide")
+     Chaque découverte part en événement plutôt que dans la réponse : les
+     appareils arrivent un par un, au fil des annonces Bluetooth, et attendre une
+     liste complète ferait patienter devant un écran vide alors que le premier
+     appareil est déjà là.
+     */
+    AsyncFunction("startScan") { (promise: Promise) in
+      DispatchQueue.main.async {
+        self.seen.removeAll()
+        let manager = ThingSmartBLEManager.sharedInstance()
+        manager.delegate = self.relay
+        guard manager.isPoweredOn else {
+          promise.reject("BLE_OFF", "Le Bluetooth est désactivé sur cet appareil.")
           return
         }
-        let relay = ActivatorRelay { [weak self] deviceModel, error in
+        // `true` : on vide le cache du SDK, sinon un appareil appairé puis
+        // réinitialisé ne réapparaîtrait pas.
+        manager.startListening(true)
+        promise.resolve(nil)
+      }
+    }
+
+    AsyncFunction("stopScan") { (promise: Promise) in
+      DispatchQueue.main.async {
+        ThingSmartBLEManager.sharedInstance().stopListening(true)
+        self.seen.removeAll()
+        promise.resolve(nil)
+      }
+    }
+
+    /**
+     Réseaux Wi-Fi que l'appareil capte, à lui demander par Bluetooth.
+
+     C'est l'appareil qui répond, et non le téléphone : la liste ne contient donc
+     que des réseaux qu'il peut réellement rejoindre. Tous les modèles ne le
+     savent pas faire — l'écran doit prévoir la saisie manuelle en repli.
+     */
+    AsyncFunction("queryWifiList") { (uuid: String, promise: Promise) in
+      DispatchQueue.main.async {
+        self.relay.onWifiList = { list, _, error in
+          if let error {
+            promise.reject("TUYA_WIFI_LIST_FAILED", error.localizedDescription)
+            return
+          }
+          // Le SDK renvoie des dictionnaires : on ne garde que le nom, seul
+          // élément dont l'écran a besoin.
+          let names = list.compactMap { entry -> String? in
+            (entry as? [String: Any])?["ssid"] as? String
+          }
+          promise.resolve(names)
+        }
+
+        // Le succès signale seulement que la demande est partie ; la liste, elle,
+        // arrive par le delegate.
+        self.activator.connectAndQueryWifiList(withUUID: uuid, success: {}) { error in
+          promise.reject("TUYA_WIFI_LIST_FAILED", error?.localizedDescription ?? "Liste des réseaux indisponible")
+        }
+      }
+    }
+
+    /**
+     Appairage proprement dit : les identifiants Wi-Fi partent par Bluetooth.
+
+     Le jeton n'est pas demandé ici — `startConfigBLEWifiDevice` s'en charge à
+     partir du foyer, contrairement au mode AP où il fallait le réclamer d'abord.
+     */
+    AsyncFunction("pairDevice") { (uuid: String, productId: String, ssid: String, password: String, homeId: Int, timeoutS: Int, promise: Promise) in
+      DispatchQueue.main.async {
+        let home = Int64(homeId)
+        self.currentHomeId = home
+
+        self.relay.onPaired = { [weak self] deviceModel, error in
           guard let self else { return }
           if let error {
             self.sendEvent("onPairingError", ["message": error.localizedDescription])
             return
           }
+          // Ni appareil ni erreur : le SDK rend la main sans rien conclure. Le
+          // taire laissait l'écran tourner jusqu'au délai maximal, sans que rien
+          // n'explique l'attente.
           guard let deviceModel else {
-            self.sendEvent("onPairingProgress", ["step": "binding"])
+            self.sendEvent("onPairingError", [
+              "message": "Le service du fabricant a répondu sans identifier l’appareil.",
+            ])
             return
           }
           self.sendEvent("onDeviceFound", [
@@ -220,26 +374,78 @@ public class TuyaPairingModule: Module {
             "name": deviceModel.name ?? "",
           ])
         }
-        let activator = ThingSmartActivator.sharedInstance()
-        activator?.delegate = relay
-        self.relay = relay
-        self.activator = activator
+
         self.sendEvent("onPairingProgress", ["step": "connecting"])
-        activator?.startConfigWiFi(.AP, ssid: ssid, password: password, token: token, timeout: TimeInterval(timeoutS))
+        self.activator.startConfigBLEWifiDevice(
+          withUUID: uuid,
+          homeId: home,
+          productId: productId,
+          ssid: ssid,
+          password: password,
+          timeout: TimeInterval(timeoutS),
+          success: {
+            self.relay.onTrace?("startConfigBLEWifiDevice : success")
+            self.sendEvent("onPairingProgress", ["step": "binding"])
+          },
+          // Ce rappel-ci ne porte aucune erreur — le SDK ne la transmet qu'au
+          // delegate. D'où un message générique ici, et le détail via
+          // `didReceiveBLEWifiConfigDevice` lorsqu'il en donne un.
+          failure: {
+            self.sendEvent("onPairingError", [
+              "message": "L’appareil n’a pas pu rejoindre le réseau.",
+            ])
+          }
+        )
         promise.resolve(nil)
+      }
+    }
+
+    /**
+     Appareils actuellement rattachés au foyer Tuya.
+
+     **Le filet de sécurité du rappel d'appairage.** Une fois la configuration
+     reçue, l'appareil bascule sur le Wi-Fi et cesse d'accepter les connexions
+     Bluetooth ; le SDK, lui, tente de s'y reconnecter, échoue, et conclut à un
+     échec sans jamais appeler son delegate — alors même que le journal montre
+     l'appareil créé côté serveur. Interroger le foyer contourne ce rappel
+     manquant : ce que le serveur dit fait foi, pas ce que le Bluetooth croit.
+
+     L'écran compare cette liste à celle d'avant l'appairage ; le nouveau venu est
+     l'appareil qu'on vient d'ajouter.
+     */
+    AsyncFunction("homeDevices") { (homeId: Int, promise: Promise) in
+      let home = ThingSmartHome(homeId: Int64(homeId))
+      home?.getDataWithSuccess({ _ in
+        let devices = (home?.deviceList ?? []).map { device in
+          [
+            "deviceId": device.devId ?? "",
+            "name": device.name ?? "",
+            // Date d'activation, en secondes : c'est elle qui distingue
+            // l'appareil qu'on vient d'appairer de ceux déjà présents. Comparer
+            // les listes ne suffit pas — un appareil réappairé était déjà là.
+            "activeTime": device.activeTime,
+          ] as [String: Any]
+        }
+        self.relay.onTrace?("homeDevices : \(devices.count) appareil(s)")
+        promise.resolve(devices)
       }, failure: { error in
-        promise.reject("TUYA_TOKEN_FAILED", error?.localizedDescription ?? "Jeton d’appairage indisponible")
+        promise.reject("TUYA_HOME_DEVICES_FAILED", error?.localizedDescription ?? "Foyer illisible")
       })
     }
 
     AsyncFunction("stopPairing") { (promise: Promise) in
-      // Toujours refermer : une fenêtre laissée ouverte continue de consommer la
+      // Toujours refermer : une écoute laissée ouverte continue de consommer la
       // radio et la batterie, et peut capter un appareil du voisin.
-      ThingSmartActivator.sharedInstance()?.stopConfigWiFi()
-      self.activator?.delegate = nil
-      self.activator = nil
-      self.relay = nil
-      promise.resolve(nil)
+      DispatchQueue.main.async {
+        ThingSmartBLEManager.sharedInstance().stopListening(true)
+        self.relay.onPaired = nil
+        self.relay.onWifiList = nil
+        // L'activateur, lui, survit à l'arrêt : sa connexion Bluetooth est
+        // réutilisée d'une tentative à l'autre, et le recréer est précisément ce
+        // qui faisait perdre le résultat.
+        self.seen.removeAll()
+        promise.resolve(nil)
+      }
     }
   }
 }
